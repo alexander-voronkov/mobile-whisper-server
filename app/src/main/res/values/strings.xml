@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Whisper Server</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_restart">Restart</string>
+</resources>

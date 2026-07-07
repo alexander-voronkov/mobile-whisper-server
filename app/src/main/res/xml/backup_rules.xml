@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Do not back up encrypted secrets (or the plaintext fallback) or models. -->
+    <exclude domain="sharedpref" path="whisper_secrets.xml" />
+    <exclude domain="sharedpref" path="whisper_secrets_plain.xml" />
+    <exclude domain="file" path="models/" />
+</full-backup-content>
