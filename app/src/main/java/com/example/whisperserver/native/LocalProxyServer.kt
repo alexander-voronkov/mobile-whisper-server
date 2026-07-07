@@ -14,7 +14,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
@@ -45,9 +46,13 @@ class LocalProxyServer(
     private var running = false
 
     private var acceptThread: Thread? = null
-    // Bounded pool so a burst of (possibly stalled) connections can't spawn
-    // unbounded threads. Stalled sockets are reaped by the read timeout below.
-    private val workers = Executors.newFixedThreadPool(MAX_WORKERS)
+    // Bounded pool AND bounded queue so a burst of (possibly stalled) connections
+    // can't spawn unbounded threads or hold unbounded open sockets. When both are
+    // full, execute() throws RejectedExecutionException and the accept loop closes
+    // the excess socket instead of leaking it.
+    private val workers = ThreadPoolExecutor(
+        MAX_WORKERS, MAX_WORKERS, 60L, TimeUnit.SECONDS, ArrayBlockingQueue<Runnable>(MAX_QUEUE),
+    )
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -86,17 +91,29 @@ class LocalProxyServer(
                 if (running) onLog(LogLevel.WARN, "Proxy accept error: ${e.message}")
                 break
             }
-            workers.execute { handleConnection(conn) }
+            // Arm the read timeout before queueing so even a socket that waits in
+            // the queue can't later pin a worker forever.
+            try {
+                conn.soTimeout = SOCKET_TIMEOUT_MS
+            } catch (_: Exception) {
+            }
+            try {
+                workers.execute { handleConnection(conn) }
+            } catch (e: Exception) {
+                // Pool + queue saturated: drop this connection rather than leak it.
+                onLog(LogLevel.WARN, "Proxy overloaded; dropping connection")
+                try {
+                    conn.close()
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
     private fun handleConnection(socket: Socket) {
         socket.use {
             try {
-                // Per-read inactivity timeout: a client that connects and never
-                // sends (or stalls mid-stream) is dropped instead of pinning a
-                // worker thread forever. A steadily-uploading client won't trip it.
-                socket.soTimeout = SOCKET_TIMEOUT_MS
+                // soTimeout was armed in acceptLoop before this was queued.
                 val input = BufferedInputStream(socket.getInputStream())
                 val output = BufferedOutputStream(socket.getOutputStream())
 
@@ -151,12 +168,24 @@ class LocalProxyServer(
             .filterNot { (name, _) ->
                 val l = name.lowercase()
                 l in HOP_BY_HOP || l == "host" || l == "authorization" ||
-                    l == "content-length" || l == "content-type"
+                    l == "content-length" || l == "content-type" || l == "expect"
             }
             .toMap()
             .toHeaders()
 
         val hasBody = contentLength > 0
+
+        // Honour Expect: 100-continue (curl uses it for multi-MB -F uploads): the
+        // client withholds the body until it sees an interim 100, so send it
+        // before we start reading the body — otherwise the upload deadlocks.
+        val expectsContinue = headers.any {
+            it.first.equals("Expect", true) && it.second.contains("100-continue", true)
+        }
+        if (hasBody && expectsContinue) {
+            output.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.flush()
+        }
+
         val body: RequestBody? = when {
             method == "GET" || method == "HEAD" -> null
             hasBody -> streamingBody(input, contentLength, contentType)
@@ -274,6 +303,7 @@ class LocalProxyServer(
         private const val MAX_LINE = 16 * 1024
         private const val MAX_HEADERS = 100
         private const val MAX_WORKERS = 16
+        private const val MAX_QUEUE = 32
         private const val SOCKET_TIMEOUT_MS = 30_000
 
         private val HOP_BY_HOP = setOf(

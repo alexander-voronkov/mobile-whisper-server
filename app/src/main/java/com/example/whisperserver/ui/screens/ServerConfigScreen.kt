@@ -163,17 +163,31 @@ private fun StatusCard(
         }
         Text(statusText, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 4.dp))
 
+        // While running, show the endpoint the server is ACTUALLY listening on
+        // (from ServerState.Running) — not the edited config, which only takes
+        // effect on the next start/restart.
+        val running = serverState as? ServerState.Running
+        val activeHost = running?.host ?: config.host
+        val activePort = running?.port ?: config.port
         val reachableHost = when {
-            config.host != "0.0.0.0" -> config.host
+            activeHost != "0.0.0.0" -> activeHost
             tailscaleIp != null -> tailscaleIp
             else -> "<phone-ip>"
         }
         Text(
-            "http://$reachableHost:${config.port}/v1/audio/transcriptions",
+            "http://$reachableHost:$activePort/v1/audio/transcriptions",
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(top = 4.dp),
         )
+        if (running != null && (config.host != running.host || config.port != running.port)) {
+            Text(
+                "Edited host/port applies after Restart.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

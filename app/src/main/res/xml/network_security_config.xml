@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Secure by default: no cleartext for real (remote) traffic. Model
+         downloads use HTTPS; this does not affect them. -->
+    <base-config cleartextTrafficPermitted="false" />
+
+    <!-- Permit cleartext ONLY to loopback, for the in-app proxy -> whisper-server
+         hop (http://127.0.0.1:<internal>). Without this, OkHttp rejects the
+         forward and every transcription request would 502. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
