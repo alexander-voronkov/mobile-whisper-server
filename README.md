@@ -58,6 +58,23 @@ export ANDROID_NDK_HOME=/path/to/ndk   # r26+
 Without step 1 the app still installs and runs; starting the server surfaces a
 clear "binary not found" message in the logs/UI.
 
+## Releases (GitHub Actions)
+
+`.github/workflows/release.yml` builds an installable APK on GitHub's runners
+and publishes it as a **GitHub Release** named `0.<build-number>`:
+
+- Triggers on push to `main` / the build branch, or manually via **Actions →
+  Build & Release APK → Run workflow**.
+- Runs the unit tests, best-effort cross-compiles the native `whisper-server`
+  (arm64-v8a), builds the **debug** APK with `versionName=0.<run>`, and attaches
+  `WhisperServer-0.<run>.apk` to the release (and as a workflow artifact).
+- The APK is debug-signed so it installs without setup. Because the debug
+  keystore is per-runner, uninstall a previous build before updating if the
+  signature differs. For stable, updatable signing, add a release keystore via
+  repo **Secrets** (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
+  `KEY_PASSWORD`), wire a `signingConfigs.release` in `app/build.gradle.kts`,
+  and switch the workflow's assemble step to `assembleRelease`.
+
 ## Native build
 
 `./gradlew buildWhisperNative` runs [`scripts/build-whisper.sh`](scripts/build-whisper.sh):

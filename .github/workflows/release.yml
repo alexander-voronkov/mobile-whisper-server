@@ -1,0 +1,101 @@
+name: Build & Release APK
+
+# Builds an installable APK and publishes it as a GitHub Release named
+# "0.<build-number>" on every push to a build branch (and on-demand).
+#
+# The release APK is the *debug* variant so it is signed with a keystore and
+# installs without extra setup. NOTE: the debug keystore is generated fresh on
+# each runner, so updating over a previous build requires uninstalling first.
+# For stable, updatable signing, add a release keystore via repo Secrets and
+# switch the assemble step to a signed `assembleRelease` (see README).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "claude/android-whisper-server-g0b0wg"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Compute version
+        id: ver
+        run: |
+          echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # Best effort: cross-compile the native whisper-server so the released APK
+      # can actually run the server. If this fails (e.g. toolchain issues), the
+      # build continues and ships an APK whose UI works but that reports
+      # "binary not found" until a native lib is provided. Remove this step to
+      # speed up releases if you don't need the bundled server binary.
+      - name: Build native whisper-server (best effort, arm64-v8a)
+        continue-on-error: true
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          echo "Using NDK at ${ANDROID_NDK_HOME:-<none>}"
+          ABIS=arm64-v8a ./gradlew buildWhisperNative --no-daemon --stacktrace
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Build debug APK
+        run: >-
+          ./gradlew assembleDebug --no-daemon
+          -PversionCode=${{ steps.ver.outputs.code }}
+          -PversionName=${{ steps.ver.outputs.name }}
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "dist/WhisperServer-${{ steps.ver.outputs.name }}.apk"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhisperServer-${{ steps.ver.outputs.name }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.ver.outputs.name }}" \
+            "dist/WhisperServer-${{ steps.ver.outputs.name }}.apk" \
+            --title "${{ steps.ver.outputs.name }}" \
+            --target "${{ github.sha }}" \
+            --notes "Automated build **${{ steps.ver.outputs.name }}** (run #${{ github.run_number }}) from \`${{ github.sha }}\`.
+
+          Install the attached \`WhisperServer-${{ steps.ver.outputs.name }}.apk\` (enable *Install unknown apps* on the device). This is a debug-signed build; uninstall a previous build before updating if the signature differs."
