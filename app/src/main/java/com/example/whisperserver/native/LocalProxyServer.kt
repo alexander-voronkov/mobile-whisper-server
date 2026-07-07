@@ -37,6 +37,7 @@ class LocalProxyServer(
     private val bindPort: Int,
     private val upstreamPort: Int,
     private val apiKey: String,
+    private val inferencePath: String,
     private val onLog: (LogLevel, String) -> Unit,
 ) {
     @Volatile
@@ -135,15 +136,28 @@ class LocalProxyServer(
                 }
 
                 // App-served endpoints.
+                val pathOnly = path.substringBefore('?')
                 when {
-                    method == "GET" && path == "/health" -> {
+                    method == "GET" && pathOnly == "/health" -> {
                         writeResponse(output, 200, "OK", HEALTH_JSON)
                         return
                     }
-                    method == "GET" && path == "/v1/models" -> {
+                    method == "GET" && pathOnly == "/v1/models" -> {
                         writeResponse(output, 200, "OK", MODELS_JSON)
                         return
                     }
+                }
+
+                // Only the transcription endpoint is forwarded. Everything else is
+                // rejected so whisper.cpp's localhost-only admin routes (e.g.
+                // POST /load) are never reachable from the LAN/Tailscale.
+                if (pathOnly != inferencePath) {
+                    writeResponse(output, 404, "Not Found", ERR_NOT_FOUND)
+                    return
+                }
+                if (method != "POST") {
+                    writeResponse(output, 405, "Method Not Allowed", ERR_METHOD_NOT_ALLOWED)
+                    return
                 }
 
                 forward(method, path, headers, input, output)
@@ -323,5 +337,7 @@ class LocalProxyServer(
         private const val ERR_UNAUTHORIZED = """{"error":{"message":"Invalid or missing API key","type":"invalid_request_error"}}"""
         private const val ERR_BAD_REQUEST = """{"error":{"message":"Bad request","type":"invalid_request_error"}}"""
         private const val ERR_BAD_GATEWAY = """{"error":{"message":"Whisper server not reachable","type":"server_error"}}"""
+        private const val ERR_NOT_FOUND = """{"error":{"message":"Not found","type":"invalid_request_error"}}"""
+        private const val ERR_METHOD_NOT_ALLOWED = """{"error":{"message":"Method not allowed","type":"invalid_request_error"}}"""
     }
 }

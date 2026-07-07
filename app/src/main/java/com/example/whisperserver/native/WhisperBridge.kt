@@ -7,9 +7,13 @@ import com.example.whisperserver.service.LogLevel
 import com.example.whisperserver.service.ServerController
 import com.example.whisperserver.service.ServerState
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
 
 /** Everything needed to launch the native server: settings + resolved secrets + model path. */
 data class LaunchSpec(
@@ -126,11 +130,38 @@ class WhisperBridge(
         ServerController.setState(ServerState.Starting)
         ServerController.onServerStarted()
 
-        // Start the native server (bound to localhost), then the public proxy.
-        // Each helper reports its own fatal error (via fail()) and tears down on
-        // failure, so we simply stop here.
+        // Start the native server (bound to localhost). launchProcess reports its
+        // own fatal error and tears down on failure.
         if (!launchProcess(launchSpec)) return
-        if (!startProxy(launchSpec)) return
+
+        // Publish the public proxy only once whisper-server is actually listening
+        // on the internal port, so we never forward LAN/Tailscale traffic before
+        // it is bound (or, if the port were occupied, to some other process).
+        scope.launch {
+            if (!waitForServerReady()) {
+                if (!intentionalStop) {
+                    fail("whisper-server did not start listening on 127.0.0.1:$internalPort")
+                }
+                return@launch
+            }
+            if (!intentionalStop) startProxy(launchSpec)
+        }
+    }
+
+    private suspend fun waitForServerReady(): Boolean = withContext(Dispatchers.IO) {
+        repeat(READY_MAX_ATTEMPTS) {
+            if (intentionalStop || process?.isRunning != true) return@withContext false
+            if (canConnectInternal()) return@withContext true
+            delay(READY_POLL_MS)
+        }
+        process?.isRunning == true && canConnectInternal()
+    }
+
+    private fun canConnectInternal(): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress("127.0.0.1", internalPort), 300) }
+        true
+    } catch (e: Exception) {
+        false
     }
 
     /** Returns true if the process was launched (false = fatal error already reported). */
@@ -173,6 +204,7 @@ class WhisperBridge(
                 bindPort = launchSpec.config.port,
                 upstreamPort = internalPort,
                 apiKey = launchSpec.apiKey,
+                inferencePath = inferencePath,
                 onLog = ::handleLog,
             ).also { it.start() }
             true
@@ -323,6 +355,9 @@ class WhisperBridge(
         private const val MAX_RESTARTS = 3
         private const val RESTART_WINDOW_MS = 5 * 60 * 1000L
         private const val RESTART_DELAY_MS = 2_000L
+        // Readiness poll for the internal server: up to ~8s (40 × 200ms).
+        private const val READY_MAX_ATTEMPTS = 40
+        private const val READY_POLL_MS = 200L
         private val TIME_MS_REGEX = Regex("""(\d+(?:\.\d+)?)\s*ms""")
     }
 }

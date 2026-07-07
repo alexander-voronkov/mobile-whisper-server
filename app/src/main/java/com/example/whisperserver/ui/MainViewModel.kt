@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Per-model download status shown in the model manager. */
 sealed interface DownloadUiState {
@@ -151,9 +153,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutostart(on: Boolean) = updateConfig { it.copy(autostart = on) }
     fun selectModel(model: WhisperModel) = updateConfig { it.copy(selectedModelId = model.id) }
 
+    // Serializes config writes and lets startServer/restartServer wait for all
+    // pending edits to be persisted before the service reads config.first().
+    private val configMutex = Mutex()
+
     private fun updateConfig(transform: (ServerConfig) -> ServerConfig) {
-        viewModelScope.launch { container.configRepository.update(transform) }
+        viewModelScope.launch { configMutex.withLock { container.configRepository.update(transform) } }
     }
+
+    /** Suspends until every edit queued before this call has been persisted. */
+    private suspend fun awaitConfigWrites() = configMutex.withLock { }
 
     // ---- Secrets ------------------------------------------------------------
 
@@ -169,14 +178,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Server control -----------------------------------------------------
 
-    fun startServer() = WhisperServerService.start(getApplication())
+    fun startServer() {
+        // Wait for any just-made config edit to persist so the service reads the
+        // intended host/port/model rather than the previous value.
+        viewModelScope.launch {
+            awaitConfigWrites()
+            WhisperServerService.start(getApplication())
+        }
+    }
 
     fun stopServer() = WhisperServerService.stop(getApplication())
 
     fun restartServer() {
-        val intent = Intent(getApplication(), WhisperServerService::class.java)
-            .setAction(WhisperServerService.ACTION_RESTART)
-        getApplication<Application>().startService(intent)
+        viewModelScope.launch {
+            awaitConfigWrites()
+            val intent = Intent(getApplication(), WhisperServerService::class.java)
+                .setAction(WhisperServerService.ACTION_RESTART)
+            getApplication<Application>().startService(intent)
+        }
     }
 
     fun clearLogs() = ServerController.clearLogs()
