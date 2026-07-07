@@ -14,6 +14,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.example.whisperserver.MainActivity
 import com.example.whisperserver.R
 import com.example.whisperserver.WhisperApp
@@ -65,15 +66,15 @@ class WhisperServerService : Service() {
                 restartServer()
                 return START_STICKY
             }
-            else -> startServer()
+            else -> startServer(fromBoot = intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true)
         }
         return START_STICKY
     }
 
-    private fun startServer() {
+    private fun startServer(fromBoot: Boolean = false) {
         // Must call startForeground promptly after startForegroundService().
         try {
-            startAsForeground(buildNotification("Starting…", running = false))
+            startAsForeground(buildNotification("Starting…", running = false), fromBoot)
         } catch (e: Exception) {
             // e.g. microphone FGS started without RECORD_AUDIO granted on API 34+.
             val msg = "Cannot start foreground service: ${e.message}. " +
@@ -179,16 +180,23 @@ class WhisperServerService : Service() {
 
     // ---- Foreground / notifications ----------------------------------------
 
-    private fun startAsForeground(notification: Notification) {
-        // Per spec the FGS type is "microphone". On Android 14+ this requires the
-        // RECORD_AUDIO runtime permission (declared in the manifest).
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        } else {
-            0
+    private fun startAsForeground(notification: Notification, fromBoot: Boolean) {
+        // Choose the FGS type at runtime: "microphone" (per spec) when RECORD_AUDIO
+        // is granted, otherwise "dataSync". Starting a microphone-typed FGS on
+        // Android 14+ without the mic permission throws. When launched from a
+        // background BOOT_COMPLETED broadcast, a microphone FGS can't be started
+        // at all (even with the permission), so force dataSync there.
+        val type = when {
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> 0
+            !fromBoot && hasMicPermission() -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         }
         ServiceCompat.startForeground(this, NOTIF_ID, notification, type)
     }
+
+    private fun hasMicPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
 
     private fun updateNotification(notification: Notification) {
         NotificationManagerCompat.from(this).notify(NOTIF_ID, notification)
@@ -296,6 +304,7 @@ class WhisperServerService : Service() {
         const val ACTION_START = "com.example.whisperserver.action.START"
         const val ACTION_STOP = "com.example.whisperserver.action.STOP"
         const val ACTION_RESTART = "com.example.whisperserver.action.RESTART"
+        const val EXTRA_FROM_BOOT = "com.example.whisperserver.extra.FROM_BOOT"
 
         private const val CHANNEL_ID = "whisper_server"
         private const val WARN_CHANNEL_ID = "whisper_server_warn"
@@ -304,8 +313,19 @@ class WhisperServerService : Service() {
         private const val WAKE_LOCK_TAG = "WhisperServer::ServerWakeLock"
         private const val MEMORY_SAMPLE_INTERVAL_MS = 10_000L
 
-        fun start(context: Context) {
-            val intent = Intent(context, WhisperServerService::class.java).setAction(ACTION_START)
+        fun start(context: Context) = start(context, fromBoot = false)
+
+        /**
+         * Start from a BOOT_COMPLETED broadcast. Signals the service to use the
+         * dataSync FGS type, since a microphone-typed FGS can't be started from a
+         * background broadcast on Android 14+.
+         */
+        fun startFromBoot(context: Context) = start(context, fromBoot = true)
+
+        private fun start(context: Context, fromBoot: Boolean) {
+            val intent = Intent(context, WhisperServerService::class.java)
+                .setAction(ACTION_START)
+                .putExtra(EXTRA_FROM_BOOT, fromBoot)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

@@ -72,6 +72,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val downloadJobs = mutableMapOf<String, Job>()
 
+    // Ids whose in-flight download was hard-cancelled, so its cancellation
+    // (delivered as DownloadResult.Paused) is not mistaken for a pause.
+    private val canceledIds = mutableSetOf<String>()
+
     val uiState: StateFlow<MainUiState> = combine(
         container.configRepository.config,
         downloadStates,
@@ -90,7 +94,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     model = model,
                     isDownloaded = container.modelDownloader.isDownloaded(model),
                     isSelected = config.selectedModelId == model.id,
-                    guard = container.memoryChecker.evaluate(model),
+                    // Storage guard accounts for a partial (paused) download so it
+                    // only requires the remaining bytes.
+                    guard = container.memoryChecker.evaluate(
+                        model,
+                        alreadyDownloadedBytes = container.modelDownloader.partialBytes(model),
+                    ),
                     download = downloads[model.id] ?: defaultDownloadState(model),
                 )
             },
@@ -158,14 +167,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun downloadModel(model: WhisperModel) {
         if (downloadJobs[model.id]?.isActive == true) return
-        val guard = container.memoryChecker.evaluate(model)
+        canceledIds.remove(model.id)
+        val partial = container.modelDownloader.partialBytes(model)
+        val guard = container.memoryChecker.evaluate(model, alreadyDownloadedBytes = partial)
         if (!guard.canProceed) {
             ServerController.appendLog(LogLevel.WARN, "Download blocked for ${model.id}: ${guard.message}")
             return
         }
         val token = container.secureStore.hfToken.ifBlank { null }
         val job = viewModelScope.launch {
-            setDownload(model, DownloadUiState.Downloading(DownloadProgress(0, model.downloadSizeBytes, 0)))
+            setDownload(model, DownloadUiState.Downloading(DownloadProgress(partial, model.downloadSizeBytes, 0)))
             val result = container.modelDownloader.download(model, token) { progress ->
                 setDownload(model, DownloadUiState.Downloading(progress))
             }
@@ -175,8 +186,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     refresh()
                 }
                 is DownloadResult.Failure -> setDownload(model, DownloadUiState.Failed(result.message))
-                DownloadResult.Paused ->
-                    setDownload(model, DownloadUiState.Paused(container.modelDownloader.partialBytes(model)))
+                DownloadResult.Paused -> {
+                    // A hard cancel also surfaces as Paused (coroutine cancellation);
+                    // don't resurrect the row that cancel already cleared.
+                    if (canceledIds.remove(model.id)) {
+                        clearDownload(model)
+                    } else {
+                        setDownload(model, DownloadUiState.Paused(container.modelDownloader.partialBytes(model)))
+                    }
+                }
             }
         }
         downloadJobs[model.id] = job
@@ -190,12 +208,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Cancel discards the partial file entirely. */
     fun cancelDownload(model: WhisperModel) {
+        canceledIds.add(model.id)
         downloadJobs.remove(model.id)?.cancel()
         container.modelDownloader.clearPartial(model)
         clearDownload(model)
     }
 
     fun deleteModel(model: WhisperModel) {
+        canceledIds.add(model.id)
         downloadJobs.remove(model.id)?.cancel()
         container.modelDownloader.deleteModel(model)
         clearDownload(model)

@@ -20,11 +20,16 @@ data class LaunchSpec(
 
 /**
  * Façade over the native whisper.cpp HTTP server (MVP: subprocess via
- * [ServerProcess]). Responsibilities:
+ * [ServerProcess]) plus a small [LocalProxyServer] that fronts it. Layout:
+ *
+ *   client --> LocalProxyServer (config.host:config.port, Bearer auth,
+ *              /health + /v1/models) --> whisper-server (127.0.0.1:internalPort)
+ *
+ * Responsibilities:
  *  - locate the executable (shipped as a native `lib*.so` so it lands in the
  *    read-only, exec-allowed nativeLibraryDir — required on Android 10+),
  *  - translate a [LaunchSpec] into command-line arguments,
- *  - own the process lifecycle and the crash auto-restart policy
+ *  - own the process + proxy lifecycle and the crash auto-restart policy
  *    (up to [MAX_RESTARTS] within [RESTART_WINDOW_MS], then give up),
  *  - forward output to [ServerController] and derive best-effort stats.
  *
@@ -40,10 +45,17 @@ class WhisperBridge(
     val inferencePath = "/v1/audio/transcriptions"
 
     private var process: ServerProcess? = null
+    private var proxy: LocalProxyServer? = null
     private var spec: LaunchSpec? = null
+    private var internalPort: Int = 0
 
     @Volatile
     private var intentionalStop = false
+
+    // Monotonic id of the current process launch. Exit callbacks carry the id
+    // they were created for; a callback whose id != [generation] belongs to a
+    // superseded process (from a restart/quick stop-start) and is ignored.
+    private var generation = 0
 
     // Sliding window of recent crash timestamps for the restart budget.
     private val crashTimestamps = ArrayDeque<Long>()
@@ -57,6 +69,8 @@ class WhisperBridge(
 
     fun isBinaryAvailable(): Boolean = binaryFile().let { it.exists() && it.canExecute() }
 
+    private fun ffmpegBinary(): File = File(context.applicationInfo.nativeLibraryDir, FFMPEG_SO)
+
     fun start(launchSpec: LaunchSpec) {
         if (process?.isRunning == true) {
             ServerController.appendLog(LogLevel.WARN, "Server already running; ignoring start request")
@@ -66,29 +80,32 @@ class WhisperBridge(
         if (!binary.exists()) {
             val msg = "whisper-server binary not found at ${binary.absolutePath}. " +
                 "Build it with ./gradlew buildWhisperNative (see README)."
-            ServerController.appendLog(LogLevel.ERROR, msg)
-            ServerController.setState(ServerState.Error(msg))
-            onFatalError(msg)
+            fail(msg)
             return
         }
         if (!File(launchSpec.modelPath).exists()) {
-            val msg = "Model file not found: ${launchSpec.modelPath}. Download a model first."
-            ServerController.appendLog(LogLevel.ERROR, msg)
-            ServerController.setState(ServerState.Error(msg))
-            onFatalError(msg)
+            fail("Model file not found: ${launchSpec.modelPath}. Download a model first.")
             return
         }
 
         spec = launchSpec
+        internalPort = internalPortFor(launchSpec.config.port)
         intentionalStop = false
         crashTimestamps.clear()
         ServerController.setState(ServerState.Starting)
         ServerController.onServerStarted()
-        launchProcess(launchSpec)
+
+        // Start the native server (bound to localhost), then the public proxy.
+        // Each helper reports its own fatal error (via fail()) and tears down on
+        // failure, so we simply stop here.
+        if (!launchProcess(launchSpec)) return
+        if (!startProxy(launchSpec)) return
     }
 
-    private fun launchProcess(launchSpec: LaunchSpec) {
-        val command = buildCommand(launchSpec)
+    /** Returns true if the process was launched (false = fatal error already reported). */
+    private fun launchProcess(launchSpec: LaunchSpec): Boolean {
+        val gen = ++generation
+        val command = buildCommand(launchSpec, internalPort)
         val proc = ServerProcess(
             command = command,
             workingDir = context.filesDir,
@@ -98,36 +115,69 @@ class WhisperBridge(
                 "LD_LIBRARY_PATH" to context.applicationInfo.nativeLibraryDir,
             ),
             onLog = ::handleLog,
-            onExit = ::handleExit,
+            onExit = { code -> handleExit(gen, code) },
         )
         process = proc
-        proc.start()
-        // We optimistically move to Running; a fast crash will flip us back.
-        ServerController.setState(
-            ServerState.Running(launchSpec.config.host, launchSpec.config.port, launchSpec.config.selectedModelId),
-        )
+        return try {
+            proc.start()
+            ServerController.setState(
+                ServerState.Running(launchSpec.config.host, launchSpec.config.port, launchSpec.config.selectedModelId),
+            )
+            true
+        } catch (e: Exception) {
+            // ProcessBuilder.start() can throw (exec format error, permission denied).
+            Log.e(TAG, "Failed to start server process", e)
+            fail("Failed to start whisper-server: ${e.message}")
+            false
+        }
     }
 
-    /** Build the whisper-server argument list from config. */
-    fun buildCommand(launchSpec: LaunchSpec): List<String> {
+    private fun startProxy(launchSpec: LaunchSpec): Boolean {
+        return try {
+            proxy = LocalProxyServer(
+                bindHost = launchSpec.config.host,
+                bindPort = launchSpec.config.port,
+                upstreamPort = internalPort,
+                apiKey = launchSpec.apiKey,
+                onLog = ::handleLog,
+            ).also { it.start() }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to bind proxy on ${launchSpec.config.host}:${launchSpec.config.port}", e)
+            fail("Cannot bind ${launchSpec.config.host}:${launchSpec.config.port}: ${e.message}. Port in use?")
+            false
+        }
+    }
+
+    /** Build the whisper-server argument list from config (bound to localhost). */
+    fun buildCommand(launchSpec: LaunchSpec, port: Int): List<String> {
         val c = launchSpec.config
         val args = mutableListOf(
             binaryFile().absolutePath,
             "--model", launchSpec.modelPath,
-            "--host", c.host,
-            "--port", c.port.toString(),
+            "--host", "127.0.0.1", // public exposure is handled by the proxy
+            "--port", port.toString(),
             "--threads", c.threads.toString(),
             // Map the inference endpoint to the OpenAI-compatible path.
             "--inference-path", inferencePath,
         )
-        if (c.language.isNotBlank() && c.language != "auto") {
-            args += listOf("--language", c.language)
-        } else {
-            args += listOf("--language", "auto")
-        }
+        val language = if (c.language.isBlank()) "auto" else c.language
+        args += listOf("--language", language)
         if (c.translate) args += "--translate"
-        if (c.convertAudio) args += "--convert"
-        if (c.vad) args += "--vad"
+        if (c.convertAudio) {
+            if (ffmpegBinary().exists()) {
+                args += "--convert"
+            } else {
+                ServerController.appendLog(
+                    LogLevel.WARN,
+                    "Convert-audio is enabled but no ffmpeg (libffmpeg.so) is bundled; skipping --convert. " +
+                        "Uploads must be 16 kHz WAV.",
+                )
+            }
+        }
+        // NOTE: --vad is intentionally NOT passed. The pinned whisper.cpp server
+        // build does not parse it (it would exit via the unknown-argument path),
+        // and VAD additionally needs a separate --vad-model file we don't ship.
         return args
     }
 
@@ -151,7 +201,12 @@ class WhisperBridge(
         }
     }
 
-    private fun handleExit(code: Int) {
+    private fun handleExit(gen: Int, code: Int) {
+        // Ignore exits from a process we've already superseded (restart / stop).
+        if (gen != generation) {
+            ServerController.appendLog(LogLevel.DEBUG, "Ignoring exit from superseded process (code $code)")
+            return
+        }
         if (intentionalStop) {
             ServerController.setState(ServerState.Stopped)
             ServerController.onServerStopped()
@@ -182,27 +237,45 @@ class WhisperBridge(
             val msg = "Server crashed $MAX_RESTARTS times within " +
                 "${RESTART_WINDOW_MS / 1000}s. Giving up."
             Log.e(TAG, msg)
-            ServerController.appendLog(LogLevel.ERROR, msg)
-            ServerController.setState(ServerState.Error(msg))
-            ServerController.onServerStopped()
-            onFatalError(msg)
+            fail(msg)
         }
     }
 
     fun stop() {
         intentionalStop = true
-        process?.stop()
+        // Invalidate any in-flight exit callback from the current process.
+        generation++
+        proxy?.stop()
+        proxy = null
+        process?.stop() // returns immediately; teardown happens off-thread
         process = null
         ServerController.setState(ServerState.Stopped)
         ServerController.onServerStopped()
     }
 
+    /** Report a fatal error: tear down and notify the service. */
+    private fun fail(message: String) {
+        generation++
+        ServerController.appendLog(LogLevel.ERROR, message)
+        ServerController.setState(ServerState.Error(message))
+        ServerController.onServerStopped()
+        proxy?.stop()
+        proxy = null
+        process?.stop()
+        process = null
+        onFatalError(message)
+    }
+
     val isRunning: Boolean
         get() = process?.isRunning == true
+
+    private fun internalPortFor(publicPort: Int): Int =
+        if (publicPort < 65535) publicPort + 1 else publicPort - 1
 
     companion object {
         private const val TAG = "WhisperBridge"
         private const val BINARY_SO = "libwhisper-server.so"
+        private const val FFMPEG_SO = "libffmpeg.so"
         private const val MAX_RESTARTS = 3
         private const val RESTART_WINDOW_MS = 5 * 60 * 1000L
         private const val RESTART_DELAY_MS = 2_000L

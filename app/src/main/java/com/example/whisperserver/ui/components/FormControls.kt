@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,11 +52,12 @@ fun SwitchRow(
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+            .clickable(enabled = enabled) { onCheckedChange(!checked) }
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -65,7 +67,7 @@ fun SwitchRow(
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 
@@ -109,33 +111,52 @@ fun <T> LabeledDropdown(
     }
 }
 
+/**
+ * Password-style field for a secret (API key / HF token). Uses a local edit
+ * buffer so typing never round-trips through a masked display value; the caller
+ * only learns the value on an explicit Save. [isSet] indicates a value is
+ * already stored (shown as a placeholder), and [onClear] removes it.
+ */
 @Composable
 fun SecretField(
     label: String,
-    value: String,
-    onValueChange: (String) -> Unit,
+    isSet: Boolean,
+    onSave: (String) -> Unit,
+    onClear: () -> Unit,
     placeholder: String,
     modifier: Modifier = Modifier,
 ) {
+    var text by remember { mutableStateOf("") }
     var visible by remember { mutableStateOf(false) }
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        placeholder = { Text(placeholder) },
-        singleLine = true,
-        visualTransformation = if (visible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        trailingIcon = {
-            Text(
-                text = if (visible) "Hide" else "Show",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clickable { visible = !visible }
-                    .padding(end = 12.dp),
-            )
-        },
-        modifier = modifier.fillMaxWidth(),
-    )
+    Column(modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            label = { Text(label) },
+            placeholder = { Text(if (isSet) "•••••••• (saved) — type to replace" else placeholder) },
+            singleLine = true,
+            visualTransformation = if (visible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            trailingIcon = {
+                Text(
+                    text = if (visible) "Hide" else "Show",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable { visible = !visible }
+                        .padding(end = 12.dp),
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row {
+            TextButton(
+                onClick = { onSave(text.trim()); text = "" },
+                enabled = text.isNotBlank(),
+            ) { Text("Save") }
+            if (isSet) {
+                TextButton(onClick = { onClear(); text = "" }) { Text("Clear") }
+            }
+        }
+    }
 }

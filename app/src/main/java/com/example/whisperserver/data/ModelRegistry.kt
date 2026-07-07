@@ -45,77 +45,81 @@ object ModelRegistry {
     private const val MB = 1024L * 1024L
     private const val GB = 1024L * MB
 
+    // Sizes are for the actual unquantized F16 `ggml-*.bin` files served by
+    // HuggingFace; RAM figures follow whisper.cpp's memory-usage table. These
+    // deliberately over- rather than under-estimate so the memory guard errs on
+    // the safe side.
     val models: List<WhisperModel> = listOf(
         WhisperModel(
             id = "tiny",
             displayName = "Tiny",
             fileName = "ggml-tiny.bin",
-            downloadSizeBytes = 39 * MB,
-            requiredRamBytes = 200 * MB,
+            downloadSizeBytes = 75 * MB,
+            requiredRamBytes = 390 * MB,
             multilingual = true,
         ),
         WhisperModel(
             id = "tiny.en",
             displayName = "Tiny (English)",
             fileName = "ggml-tiny.en.bin",
-            downloadSizeBytes = 39 * MB,
-            requiredRamBytes = 200 * MB,
+            downloadSizeBytes = 75 * MB,
+            requiredRamBytes = 390 * MB,
             multilingual = false,
         ),
         WhisperModel(
             id = "base",
             displayName = "Base",
             fileName = "ggml-base.bin",
-            downloadSizeBytes = 74 * MB,
-            requiredRamBytes = 300 * MB,
+            downloadSizeBytes = 142 * MB,
+            requiredRamBytes = 500 * MB,
             multilingual = true,
         ),
         WhisperModel(
             id = "base.en",
             displayName = "Base (English)",
             fileName = "ggml-base.en.bin",
-            downloadSizeBytes = 74 * MB,
-            requiredRamBytes = 300 * MB,
+            downloadSizeBytes = 142 * MB,
+            requiredRamBytes = 500 * MB,
             multilingual = false,
         ),
         WhisperModel(
             id = "small",
             displayName = "Small",
             fileName = "ggml-small.bin",
-            downloadSizeBytes = 244 * MB,
-            requiredRamBytes = 600 * MB,
+            downloadSizeBytes = 466 * MB,
+            requiredRamBytes = 1024 * MB, // ~1.0 GB
             multilingual = true,
         ),
         WhisperModel(
             id = "small.en",
             displayName = "Small (English)",
             fileName = "ggml-small.en.bin",
-            downloadSizeBytes = 244 * MB,
-            requiredRamBytes = 600 * MB,
+            downloadSizeBytes = 466 * MB,
+            requiredRamBytes = 1024 * MB, // ~1.0 GB
             multilingual = false,
         ),
         WhisperModel(
             id = "medium",
             displayName = "Medium",
             fileName = "ggml-medium.bin",
-            downloadSizeBytes = 769 * MB,
-            requiredRamBytes = 1536 * MB, // ~1.5 GB
+            downloadSizeBytes = 1536 * MB, // ~1.5 GB
+            requiredRamBytes = 2662 * MB,  // ~2.6 GB
             multilingual = true,
         ),
         WhisperModel(
             id = "medium.en",
             displayName = "Medium (English)",
             fileName = "ggml-medium.en.bin",
-            downloadSizeBytes = 769 * MB,
-            requiredRamBytes = 1536 * MB, // ~1.5 GB
+            downloadSizeBytes = 1536 * MB, // ~1.5 GB
+            requiredRamBytes = 2662 * MB,  // ~2.6 GB
             multilingual = false,
         ),
         WhisperModel(
             id = "large-v3",
             displayName = "Large v3",
             fileName = "ggml-large-v3.bin",
-            downloadSizeBytes = 1500 * MB, // ~1.5 GB
-            requiredRamBytes = 2560 * MB,  // ~2.5 GB
+            downloadSizeBytes = 3100 * MB, // ~3.0 GB
+            requiredRamBytes = 3900 * MB,  // ~3.8 GB
             multilingual = true,
         ),
     )

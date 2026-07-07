@@ -95,22 +95,32 @@ class ServerProcess(
         }
     }
 
+    /**
+     * Requests process termination and returns immediately. `destroy()` only
+     * sends a signal (non-blocking); the up-to-3s wait for graceful exit (and
+     * the forcible kill fallback) run on a daemon thread so callers on the main
+     * thread never block. Process exit still fires [onExit] via the wait thread.
+     */
     fun stop() {
         stoppedByUs = true
         val proc = process ?: return
-        try {
-            proc.destroy()
-            if (!proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
-                proc.destroyForcibly()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error stopping process", e)
+        proc.destroy() // non-blocking SIGTERM
+        readerThread?.interrupt()
+        Thread({
             try {
-                proc.destroyForcibly()
-            } catch (_: Exception) {
+                if (!proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                    proc.destroyForcibly()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error stopping process", e)
+                try {
+                    proc.destroyForcibly()
+                } catch (_: Exception) {
+                }
             }
-        } finally {
-            readerThread?.interrupt()
+        }, "whisper-stop").apply {
+            isDaemon = true
+            start()
         }
     }
 

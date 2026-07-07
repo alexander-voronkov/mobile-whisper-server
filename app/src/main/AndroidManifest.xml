@@ -6,17 +6,18 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
-        The foreground service uses the "microphone" type per spec. Android 14+
-        requires the RECORD_AUDIO runtime permission to start a microphone-typed
-        foreground service. It is declared here (not used for in-app recording
-        yet). If you prefer not to request the mic permission for a server-only
-        build, switch the service type to "dataSync"/"specialUse" in both this
-        manifest and WhisperServerService.startAsForeground().
+        RECORD_AUDIO enables the "microphone" foreground-service type (per spec).
+        The service declares both "microphone" and "dataSync" types and picks one
+        at runtime: microphone when RECORD_AUDIO is granted, otherwise dataSync.
+        dataSync is also what makes autostart-on-boot work — a microphone-typed
+        FGS cannot be started from a background BOOT_COMPLETED broadcast on
+        Android 14+, whereas dataSync can.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
@@ -47,7 +48,7 @@
         <service
             android:name=".service.WhisperServerService"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="microphone|dataSync" />
 
         <receiver
             android:name=".service.BootReceiver"

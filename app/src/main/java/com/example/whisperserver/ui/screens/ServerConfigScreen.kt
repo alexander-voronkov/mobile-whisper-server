@@ -78,8 +78,9 @@ fun ServerConfigScreen(
         SectionCard("Security") {
             SecretField(
                 label = "API key (optional)",
-                value = if (state.hasApiKey) MASK else "",
-                onValueChange = onApiKey,
+                isSet = state.hasApiKey,
+                onSave = onApiKey,
+                onClear = { onApiKey("") },
                 placeholder = "Bearer token required on requests if set",
             )
             Text(
@@ -104,9 +105,18 @@ fun ServerConfigScreen(
                 "Convert audio (ffmpeg)",
                 config.convertAudio,
                 onConvert,
-                subtitle = "Accept mp3/m4a/etc. Requires bundled ffmpeg.",
+                subtitle = "Accept mp3/m4a/etc. Requires a bundled ffmpeg binary; " +
+                    "without it uploads must be 16 kHz WAV.",
             )
-            SwitchRow("Voice Activity Detection", config.vad, onVad)
+            // VAD is disabled: the pinned whisper.cpp server build does not accept
+            // --vad and it needs a separate VAD model that isn't shipped.
+            SwitchRow(
+                "Voice Activity Detection",
+                checked = false,
+                onCheckedChange = {},
+                enabled = false,
+                subtitle = "Unavailable in this build (needs server VAD support + model).",
+            )
             Spacer(Modifier.height(8.dp))
             ThreadsField(config.threads, maxThreads, onThreads)
         }
@@ -114,8 +124,9 @@ fun ServerConfigScreen(
         SectionCard("Downloads") {
             SecretField(
                 label = "HuggingFace token (optional)",
-                value = if (state.hasHfToken) MASK else "",
-                onValueChange = onHfToken,
+                isSet = state.hasHfToken,
+                onSave = onHfToken,
+                onClear = { onHfToken("") },
                 placeholder = "For rate-limit relief on model downloads",
             )
         }
@@ -132,8 +143,6 @@ fun ServerConfigScreen(
         Spacer(Modifier.height(24.dp))
     }
 }
-
-private const val MASK = "••••••••"
 
 @Composable
 private fun StatusCard(

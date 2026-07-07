@@ -20,11 +20,14 @@ the server, manage models with RAM/storage guards, and watch live logs & stats.
 - **Model manager** with radio-button selection, per-model **memory & storage
   guard** (green / yellow / red), resumable HuggingFace downloads with progress +
   speed, and optional SHA-256 verification.
-- **OpenAI-compatible API** — the inference path is mapped to
-  `/v1/audio/transcriptions` via `--inference-path`.
+- **OpenAI-compatible API** behind a small in-app front (`LocalProxyServer`):
+  `POST /v1/audio/transcriptions` (mapped via `--inference-path`), plus
+  `GET /health` and `GET /v1/models` served directly, and **Bearer API-key
+  auth** enforced on all requests when a key is set. whisper-server itself binds
+  `127.0.0.1`; the proxy owns the public `host:port`.
 - **Server config UI** — host (0.0.0.0 or auto-detected Tailscale IP), port,
   optional API key (Keystore-encrypted), language, translate, convert (ffmpeg),
-  VAD, threads.
+  threads.
 - **Autostart on boot** (`BootReceiver`) using the last-saved config.
 - **Live logs** (last 500 lines, auto-scroll) and **stats** (requests, avg time,
   uptime, memory).
@@ -78,12 +81,17 @@ the server (as `libffmpeg.so`) or integrate [ffmpeg-kit](https://github.com/arth
 From another device on the same network (e.g. Tailscale):
 
 ```bash
-# Transcribe an audio file (OpenAI-compatible response):
-curl -F file=@audio.mp3 http://<phone-ip>:8080/v1/audio/transcriptions
+# Liveness check:
+curl http://<phone-ip>:8080/health                     # {"status":"ok"}
+curl http://<phone-ip>:8080/v1/models                  # {"data":[{"id":"whisper-1",...}]}
 
-# With an API key configured in the app:
+# Transcribe an audio file (OpenAI-compatible response).
+# NOTE: send a 16 kHz WAV unless you've bundled ffmpeg and enabled "Convert audio".
+curl -F file=@audio.wav http://<phone-ip>:8080/v1/audio/transcriptions
+
+# With an API key configured in the app (enforced on all requests):
 curl -H "Authorization: Bearer <key>" \
-     -F file=@audio.mp3 \
+     -F file=@audio.wav \
      -F response_format=json \
      http://<phone-ip>:8080/v1/audio/transcriptions
 ```
@@ -103,6 +111,7 @@ app/src/main/java/com/example/whisperserver/
 │   └── ServerController.kt      # process-wide state/logs/stats StateFlows
 ├── native/
 │   ├── WhisperBridge.kt         # launch spec → args, lifecycle, restart policy
+│   ├── LocalProxyServer.kt      # auth + /health + /v1/models front for the server
 │   └── ServerProcess.kt         # ProcessBuilder subprocess + log streaming
 ├── data/
 │   ├── ModelRegistry.kt         # model metadata table
@@ -140,28 +149,33 @@ blocked from Large-v3, matching the acceptance criteria.
 ## Permissions
 
 `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`,
-`FOREGROUND_SERVICE_MICROPHONE`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK`,
-`POST_NOTIFICATIONS`, `RECORD_AUDIO`.
+`FOREGROUND_SERVICE_MICROPHONE`, `FOREGROUND_SERVICE_DATA_SYNC`,
+`RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK`, `POST_NOTIFICATIONS`, `RECORD_AUDIO`.
 
-> **On the microphone foreground-service type:** the spec requires a
-> microphone-typed FGS. On Android 14+ that type requires the `RECORD_AUDIO`
-> runtime permission to be granted, so it is requested at first launch even
-> though the server only transcribes uploaded files. If you prefer not to
-> request the mic permission for a server-only build, switch the type to
-> `dataSync`/`specialUse` in `AndroidManifest.xml` and
-> `WhisperServerService.startAsForeground()`.
+> **Foreground-service type:** the service declares both `microphone` and
+> `dataSync` and picks one at runtime — `microphone` (per spec) when
+> `RECORD_AUDIO` is granted, otherwise `dataSync`. This also fixes autostart:
+> a microphone-typed FGS can't be started from a background `BOOT_COMPLETED`
+> broadcast on Android 14+, but `dataSync` can, so boot autostart falls back to
+> `dataSync`.
 
 ## Known limitations
 
 - The native `whisper-server` binary must be built locally (see above); it is
   not committed.
-- `GET /health` and `GET /v1/models`, and API-key enforcement, depend on the
-  capabilities of the whisper.cpp server build you compile. If your build lacks
-  them, front the server with a small proxy or use the JNI path (phase 2).
+- `--convert` (transcoding non-WAV uploads) is **off by default** because no
+  `ffmpeg` binary is bundled — whisper-server exits at startup if `--convert` is
+  passed without ffmpeg on `PATH`. Package an `ffmpeg` (as `libffmpeg.so`) to
+  enable it; the app auto-detects it and only then passes `--convert`.
+- **VAD is disabled** — the pinned whisper.cpp server build doesn't parse
+  `--vad` (and it needs a separate VAD model). Re-enable once you build a server
+  revision with VAD support and ship the model.
 - Request stats are parsed best-effort from server log output and reset on
   restart.
 - Model SHA-256 checksums are not embedded by default (upstream publishes no
   stable manifest); fill them into `ModelRegistry` to enforce verification.
+- The in-app proxy is intentionally minimal (Content-Length bodies,
+  `Connection: close`); it is not a general-purpose HTTP proxy.
 
 ## License
 

@@ -76,23 +76,30 @@ object MemoryGuard {
         else -> StorageVerdict.OK
     }
 
+    /**
+     * @param alreadyDownloadedBytes bytes already on disk (a paused `.part` file).
+     *   The storage check only requires the *remaining* bytes, so resuming a
+     *   nearly-complete download isn't blocked near the storage limit.
+     */
     fun evaluate(
         model: WhisperModel,
         totalRamBytes: Long,
         availableRamBytes: Long,
         availableStorageBytes: Long,
+        alreadyDownloadedBytes: Long = 0,
     ): MemoryGuardResult {
+        val remainingBytes = (model.downloadSizeBytes - alreadyDownloadedBytes).coerceAtLeast(0)
         val memory = evaluateMemory(totalRamBytes, availableRamBytes, model.requiredRamBytes)
-        val storage = evaluateStorage(model.downloadSizeBytes, availableStorageBytes)
+        val storage = evaluateStorage(remainingBytes, availableStorageBytes)
         return MemoryGuardResult(
             memory = memory,
             storage = storage,
             totalRamBytes = totalRamBytes,
             availableRamBytes = availableRamBytes,
             requiredRamBytes = model.requiredRamBytes,
-            downloadSizeBytes = model.downloadSizeBytes,
+            downloadSizeBytes = remainingBytes,
             availableStorageBytes = availableStorageBytes,
-            message = buildMessage(model, memory, storage, totalRamBytes, availableRamBytes, availableStorageBytes),
+            message = buildMessage(model, memory, storage, totalRamBytes, availableRamBytes, availableStorageBytes, remainingBytes),
         )
     }
 
@@ -103,10 +110,11 @@ object MemoryGuard {
         totalRamBytes: Long,
         availableRamBytes: Long,
         availableStorageBytes: Long,
+        remainingBytes: Long,
     ): String {
         // Storage block is the most fatal — report it first.
         if (storage == StorageVerdict.BLOCK) {
-            return "Not enough storage space. Need ~${humanBytes(model.downloadSizeBytes)}, " +
+            return "Not enough storage space. Need ~${humanBytes(remainingBytes)}, " +
                 "only ${humanBytes(availableStorageBytes)} available."
         }
         return when (memory) {
@@ -164,13 +172,14 @@ class MemoryChecker(private val context: Context) {
         return stat.availableBlocksLong * stat.blockSizeLong
     }
 
-    fun evaluate(model: WhisperModel): MemoryGuardResult {
+    fun evaluate(model: WhisperModel, alreadyDownloadedBytes: Long = 0): MemoryGuardResult {
         val mem = readMemory()
         return MemoryGuard.evaluate(
             model = model,
             totalRamBytes = mem.totalBytes,
             availableRamBytes = mem.availableBytes,
             availableStorageBytes = availableStorageBytes(),
+            alreadyDownloadedBytes = alreadyDownloadedBytes,
         )
     }
 

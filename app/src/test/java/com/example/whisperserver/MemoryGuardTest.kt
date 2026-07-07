@@ -98,6 +98,30 @@ class MemoryGuardTest {
     }
 
     @Test
+    fun storageGuard_usesRemainingBytesWhenResuming() {
+        val small = ModelRegistry.byId("small")!! // 466 MB download
+        // Only 100 MB free: a fresh download is blocked...
+        val fresh = MemoryGuard.evaluate(
+            model = small,
+            totalRamBytes = 8 * gb,
+            availableRamBytes = 6 * gb,
+            availableStorageBytes = 100 * mb,
+        )
+        assertEquals(StorageVerdict.BLOCK, fresh.storage)
+
+        // ...but resuming with 400 MB already on disk only needs ~66 MB more.
+        val resume = MemoryGuard.evaluate(
+            model = small,
+            totalRamBytes = 8 * gb,
+            availableRamBytes = 6 * gb,
+            availableStorageBytes = 100 * mb,
+            alreadyDownloadedBytes = 400 * mb,
+        )
+        assertEquals(StorageVerdict.OK, resume.storage)
+        assertTrue(resume.canProceed)
+    }
+
+    @Test
     fun storageOk_whenEnoughFreeSpace() {
         val verdict = MemoryGuard.evaluateStorage(
             downloadSizeBytes = 244 * mb,

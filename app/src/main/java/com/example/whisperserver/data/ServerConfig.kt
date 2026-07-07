@@ -48,7 +48,10 @@ data class ServerConfig(
     val port: Int = DEFAULT_PORT,
     val language: String = "auto",
     val translate: Boolean = false,
-    val convertAudio: Boolean = true,
+    // Off by default: --convert requires an ffmpeg executable on PATH, which this
+    // build does not bundle. Enabling it without ffmpeg makes whisper-server exit
+    // at startup. Turn on only once an ffmpeg binary is packaged.
+    val convertAudio: Boolean = false,
     val vad: Boolean = false,
     val threads: Int = DEFAULT_THREADS,
     val autostart: Boolean = false,

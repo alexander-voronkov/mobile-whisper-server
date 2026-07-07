@@ -32,7 +32,7 @@ class BootReceiver : BroadcastReceiver() {
                 val config = WhisperApp.container(appContext).configRepository.config.first()
                 if (config.autostart) {
                     Log.i(TAG, "Autostart enabled — starting Whisper server")
-                    WhisperServerService.start(appContext)
+                    WhisperServerService.startFromBoot(appContext)
                 } else {
                     Log.i(TAG, "Autostart disabled — not starting server")
                 }

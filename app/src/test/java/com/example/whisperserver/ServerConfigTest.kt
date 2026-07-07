@@ -16,7 +16,9 @@ class ServerConfigTest {
         assertEquals("auto", config.language)
         assertEquals(4, config.threads)
         assertFalse(config.translate)
-        assertTrue(config.convertAudio)
+        // Convert is off by default: ffmpeg is not bundled, and --convert would
+        // make whisper-server exit at startup.
+        assertFalse(config.convertAudio)
         assertFalse(config.vad)
         assertFalse(config.autostart)
     }
