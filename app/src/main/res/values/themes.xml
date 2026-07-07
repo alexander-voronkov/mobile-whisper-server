@@ -1,0 +1,12 @@
+<resources>
+    <!--
+        Window/splash theme only. The in-app UI colors are driven by the Compose
+        Material3 theme (WhisperServerTheme); this platform parent avoids a
+        dependency on the Material Components XML library.
+    -->
+    <style name="Theme.WhisperServer" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

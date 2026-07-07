@@ -1,0 +1,168 @@
+# Whisper Server (Android)
+
+A native Android app that bundles [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+and runs its HTTP server as a persistent foreground service, exposing an
+**OpenAI-compatible** `/v1/audio/transcriptions` endpoint over the local network
+(including Tailscale). It provides a Jetpack Compose UI to configure and control
+the server, manage models with RAM/storage guards, and watch live logs & stats.
+
+> **Status:** application scaffold + full app logic. The native `whisper-server`
+> binary is not committed (it is large and platform-specific); build it once with
+> `./gradlew buildWhisperNative` (see [Native build](#native-build)). Everything
+> else — UI, service lifecycle, model manager, downloader, memory guard, config,
+> Tailscale detection, boot autostart — is implemented and unit-tested.
+
+## Features
+
+- **Foreground service** (`WhisperServerService`) running whisper.cpp as a native
+  child process, with a persistent notification (`Stop` / `Restart` actions),
+  a partial wake lock, and crash auto-restart (up to 3× within 5 minutes).
+- **Model manager** with radio-button selection, per-model **memory & storage
+  guard** (green / yellow / red), resumable HuggingFace downloads with progress +
+  speed, and optional SHA-256 verification.
+- **OpenAI-compatible API** — the inference path is mapped to
+  `/v1/audio/transcriptions` via `--inference-path`.
+- **Server config UI** — host (0.0.0.0 or auto-detected Tailscale IP), port,
+  optional API key (Keystore-encrypted), language, translate, convert (ffmpeg),
+  VAD, threads.
+- **Autostart on boot** (`BootReceiver`) using the last-saved config.
+- **Live logs** (last 500 lines, auto-scroll) and **stats** (requests, avg time,
+  uptime, memory).
+
+## Requirements
+
+- Android Studio (Ladybug or newer) / AGP 8.7, JDK 17
+- Android SDK 35, min SDK 30 (Android 11)
+- For the native build: **NDK r26+**, CMake, git
+
+## Build & run
+
+```bash
+# 1. (Once) build the native whisper-server for the bundled ABIs:
+export ANDROID_NDK_HOME=/path/to/ndk   # r26+
+./gradlew buildWhisperNative
+
+# 2. Build & install the app:
+./gradlew :app:installDebug
+
+# 3. Run unit tests (memory guard, model registry, config, tailscale):
+./gradlew :app:testDebugUnitTest
+
+# 4. Run the instrumented startup test (device/emulator required):
+./gradlew :app:connectedDebugAndroidTest
+```
+
+Without step 1 the app still installs and runs; starting the server surfaces a
+clear "binary not found" message in the logs/UI.
+
+## Native build
+
+`./gradlew buildWhisperNative` runs [`scripts/build-whisper.sh`](scripts/build-whisper.sh):
+
+1. Clones whisper.cpp at a **pinned ref** (`-PwhisperCommit=<ref>`, default
+   `v1.7.4`).
+2. Cross-compiles for `arm64-v8a` (primary) and `armeabi-v7a` (secondary) with
+   the NDK, using `-DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF -DWHISPER_BUILD_SERVER=ON`.
+3. Packages the `whisper-server` executable as
+   `app/src/main/jniLibs/<abi>/libwhisper-server.so`.
+
+The executable is shipped as a `lib*.so` on purpose: Android 10+ only allows
+`exec()` from the read-only, execute-permitted `nativeLibraryDir`, and native
+libraries land there at install time.
+
+For `--convert` (transcoding mp3/m4a/etc. to WAV) drop an `ffmpeg` binary next to
+the server (as `libffmpeg.so`) or integrate [ffmpeg-kit](https://github.com/arthenica/ffmpeg-kit).
+
+## Using the API
+
+From another device on the same network (e.g. Tailscale):
+
+```bash
+# Transcribe an audio file (OpenAI-compatible response):
+curl -F file=@audio.mp3 http://<phone-ip>:8080/v1/audio/transcriptions
+
+# With an API key configured in the app:
+curl -H "Authorization: Bearer <key>" \
+     -F file=@audio.mp3 \
+     -F response_format=json \
+     http://<phone-ip>:8080/v1/audio/transcriptions
+```
+
+Find `<phone-ip>` in the app's **Server** tab (it shows the Tailscale IP when
+host is `0.0.0.0`).
+
+## Architecture
+
+```
+app/src/main/java/com/example/whisperserver/
+├── WhisperApp.kt                # Application + manual DI container
+├── MainActivity.kt              # Compose UI host (bottom-nav: Server/Models/Logs/Stats)
+├── service/
+│   ├── WhisperServerService.kt  # foreground service, notification, wake lock
+│   ├── BootReceiver.kt          # autostart on BOOT_COMPLETED
+│   └── ServerController.kt      # process-wide state/logs/stats StateFlows
+├── native/
+│   ├── WhisperBridge.kt         # launch spec → args, lifecycle, restart policy
+│   └── ServerProcess.kt         # ProcessBuilder subprocess + log streaming
+├── data/
+│   ├── ModelRegistry.kt         # model metadata table
+│   ├── ModelDownloader.kt       # resumable HF download + checksum
+│   ├── MemoryChecker.kt         # RAM/storage guard (pure + Android wrapper)
+│   ├── ServerConfig.kt          # config model + DataStore persistence
+│   └── SecureStore.kt           # Keystore-encrypted API key / HF token
+├── network/TailscaleDetector.kt # find 100.64.0.0/10 interface
+└── ui/                          # Compose screens, components, theme + ViewModel
+```
+
+- **Pattern:** MVVM with `ViewModel` + `StateFlow`. Hilt skipped (manual DI).
+- **`ServerController`** is the single source of truth shared between the service
+  (writer) and UI (reader), safe as a singleton because both live in the app's
+  main process.
+- **Native integration** uses the MVP **subprocess** option (Option B). A JNI
+  implementation (Option A) can replace `WhisperBridge` without touching the
+  service or UI, since callers only depend on `start`/`stop` + `ServerController`.
+
+## Memory guard
+
+Before a download or model switch (`MemoryGuard`, unit-tested in
+`MemoryGuardTest`):
+
+| Condition | Verdict |
+|-----------|---------|
+| `requiredRam > totalRam * 0.7` | 🔴 **Hard block** — download disabled |
+| `requiredRam > availableRam * 1.5` | 🟡 **Soft warning** — allowed, warns |
+| otherwise | 🟢 **OK** |
+| `downloadSize > freeStorage * 0.9` | 🔴 **Storage block** |
+
+A 3 GB device (e.g. Moto G Pure) passes the guard for Tiny/Base/Small and is hard-
+blocked from Large-v3, matching the acceptance criteria.
+
+## Permissions
+
+`INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`,
+`FOREGROUND_SERVICE_MICROPHONE`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK`,
+`POST_NOTIFICATIONS`, `RECORD_AUDIO`.
+
+> **On the microphone foreground-service type:** the spec requires a
+> microphone-typed FGS. On Android 14+ that type requires the `RECORD_AUDIO`
+> runtime permission to be granted, so it is requested at first launch even
+> though the server only transcribes uploaded files. If you prefer not to
+> request the mic permission for a server-only build, switch the type to
+> `dataSync`/`specialUse` in `AndroidManifest.xml` and
+> `WhisperServerService.startAsForeground()`.
+
+## Known limitations
+
+- The native `whisper-server` binary must be built locally (see above); it is
+  not committed.
+- `GET /health` and `GET /v1/models`, and API-key enforcement, depend on the
+  capabilities of the whisper.cpp server build you compile. If your build lacks
+  them, front the server with a small proxy or use the JNI path (phase 2).
+- Request stats are parsed best-effort from server log output and reset on
+  restart.
+- Model SHA-256 checksums are not embedded by default (upstream publishes no
+  stable manifest); fill them into `ModelRegistry` to enforce verification.
+
+## License
+
+whisper.cpp is MIT-licensed (© Georgi Gerganov). This app is provided as-is.
