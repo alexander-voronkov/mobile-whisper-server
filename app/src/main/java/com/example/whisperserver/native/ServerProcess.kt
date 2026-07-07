@@ -32,13 +32,6 @@ class ServerProcess(
     val isRunning: Boolean
         get() = process?.isAlive == true
 
-    val pid: Long?
-        get() = try {
-            process?.pid()
-        } catch (_: Throwable) {
-            null
-        }
-
     fun start() {
         val builder = ProcessBuilder(command)
             .directory(workingDir)
