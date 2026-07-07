@@ -115,8 +115,13 @@ object MultipartAudio {
                     if (byteRate > 0) return dataSize * 1000 / byteRate
                 }
             }
-            // Chunks are word-aligned (padded to even length).
-            offset = body + chunkSize.toInt() + (chunkSize.toInt() and 1)
+            // Chunks are word-aligned (padded to even length). Compute the next
+            // offset in Long space and bail on any malformed size that wouldn't
+            // strictly advance or would run past the buffer — otherwise a crafted
+            // WAV (e.g. chunkSize 0xfffffff8) could spin here forever on a worker.
+            val next = body.toLong() + chunkSize + (chunkSize and 1L)
+            if (next <= offset || next > bytes.size) break
+            offset = next.toInt()
         }
         return 0
     }

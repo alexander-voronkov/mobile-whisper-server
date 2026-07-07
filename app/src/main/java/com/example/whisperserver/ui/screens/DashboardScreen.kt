@@ -72,6 +72,11 @@ fun DashboardScreen(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // Show the actionable reason on failure (missing model/binary, bind
+            // error, crash budget exhausted) — otherwise only the "Error" chip
+            // would appear and the user couldn't tell why startup failed.
+            (serverState as? ServerState.Error)?.let { err -> ErrorBanner(err.message) }
+
             // KPI tiles (2x2)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 KpiTile("Requests", stats.requestsServed.toString(), Modifier.weight(1f))
@@ -195,6 +200,30 @@ private fun KpiTile(label: String, value: String, modifier: Modifier = Modifier,
                 letterSpacing = 0.3.sp,
             )
             Text(value, color = valueColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun ErrorBanner(message: String) {
+    val c = appColors
+    CompactCard(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(
+                Icons.Filled.Error,
+                contentDescription = null,
+                tint = c.error,
+                modifier = Modifier.size(18.dp),
+            )
+            Column(Modifier.weight(1f)) {
+                Text("Server error", color = c.error, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    message,
+                    color = c.textPrimary,
+                    fontSize = 11.5.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
         }
     }
 }

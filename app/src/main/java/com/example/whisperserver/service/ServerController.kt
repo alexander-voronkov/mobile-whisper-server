@@ -97,6 +97,7 @@ object ServerController {
         _logs.value = emptyList()
     }
 
+    @Synchronized
     fun onServerStarted() {
         processingSamples = 0
         processingTotalMillis = 0
@@ -114,25 +115,29 @@ object ServerController {
      * (count, success rate, and — for successful requests — the running average
      * processing time).
      */
+    @Synchronized
     fun recordTranscription(record: TranscriptionRecord) {
         _records.update { current ->
             val next = listOf(record) + current
             if (next.size > MAX_RECORDS) next.subList(0, MAX_RECORDS) else next
         }
+        // Fold the rolling average OUTSIDE the stats.update lambda: update() can
+        // re-run its lambda under contention (CAS retry / a concurrent
+        // updateMemoryUsage), so mutating the accumulators there would double-count
+        // and drift the average upward. @Synchronized + a precomputed value keep it
+        // exactly-once; the lambda stays a pure function of `current`.
+        if (record.success && record.processingMillis > 0) {
+            processingSamples += 1
+            processingTotalMillis += record.processingMillis
+        }
+        val avg = if (processingSamples > 0) processingTotalMillis / processingSamples else 0L
         _stats.update { current ->
-            val newAvg = if (record.success && record.processingMillis > 0) {
-                processingSamples += 1
-                processingTotalMillis += record.processingMillis
-                processingTotalMillis / processingSamples
-            } else {
-                current.avgProcessingMillis
-            }
             current.copy(
                 requestsServed = current.requestsServed + 1,
                 successCount = current.successCount + if (record.success) 1 else 0,
                 failureCount = current.failureCount + if (record.success) 0 else 1,
                 lastRequestAtMillis = record.timestampMillis,
-                avgProcessingMillis = newAvg,
+                avgProcessingMillis = if (record.success && record.processingMillis > 0) avg else current.avgProcessingMillis,
             )
         }
     }
