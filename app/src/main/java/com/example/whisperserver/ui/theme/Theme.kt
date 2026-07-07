@@ -9,19 +9,28 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF2E6F5E),
+    onPrimary = Color(0xFFFFFFFF),
     secondary = Color(0xFF4C6358),
     tertiary = Color(0xFF3D6373),
+    background = Color(0xFFF4F6F2),
+    surface = Color(0xFFFFFFFF),
+    error = Color(0xFFBA1A1A),
 )
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFF8FD9C1),
+    onPrimary = Color(0xFF00382A),
     secondary = Color(0xFFB2CCBE),
     tertiary = Color(0xFFA4CDDF),
+    background = Color(0xFF0F1411),
+    surface = Color(0xFF1A201C),
+    error = Color(0xFFFFB4AB),
 )
 
 /** Semantic colors for the memory guard banner (stable across light/dark). */
@@ -34,7 +43,9 @@ object GuardColors {
 @Composable
 fun WhisperServerTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    // The redesign commits to a fixed brand palette (primary green), so dynamic
+    // Material You theming is off by default — turn it on to opt back in.
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
@@ -45,9 +56,12 @@ fun WhisperServerTheme(
         darkTheme -> DarkColors
         else -> LightColors
     }
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography(),
-        content = content,
-    )
+    val appColors = if (darkTheme) DarkAppColors else LightAppColors
+    CompositionLocalProvider(LocalAppColors provides appColors) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography(),
+            content = content,
+        )
+    }
 }

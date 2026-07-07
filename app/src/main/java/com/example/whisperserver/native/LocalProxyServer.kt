@@ -1,6 +1,7 @@
 package com.example.whisperserver.native
 
 import com.example.whisperserver.service.LogLevel
+import com.example.whisperserver.service.TranscriptionRecord
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
@@ -39,6 +40,10 @@ class LocalProxyServer(
     private val apiKey: String,
     private val inferencePath: String,
     private val onLog: (LogLevel, String) -> Unit,
+    // Model currently serving, journaled with each request. Empty when unknown.
+    private val modelId: String = "",
+    // Optional sink that journals requests (and caches audio). Null disables it.
+    private val recorder: TranscriptionRecorder? = null,
 ) {
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -98,8 +103,9 @@ class LocalProxyServer(
                 conn.soTimeout = SOCKET_TIMEOUT_MS
             } catch (_: Exception) {
             }
+            val acceptedAtNanos = System.nanoTime()
             try {
-                workers.execute { handleConnection(conn) }
+                workers.execute { handleConnection(conn, acceptedAtNanos) }
             } catch (e: Exception) {
                 // Pool + queue saturated: drop this connection rather than leak it.
                 onLog(LogLevel.WARN, "Proxy overloaded; dropping connection")
@@ -111,7 +117,10 @@ class LocalProxyServer(
         }
     }
 
-    private fun handleConnection(socket: Socket) {
+    private fun handleConnection(socket: Socket, acceptedAtNanos: Long) {
+        // Time the connection spent queued before a worker picked it up.
+        val queueWaitMillis = ((System.nanoTime() - acceptedAtNanos) / 1_000_000).coerceAtLeast(0)
+        val remoteAddress = socket.inetAddress?.hostAddress ?: "unknown"
         socket.use {
             try {
                 // soTimeout was armed in acceptLoop before this was queued.
@@ -160,7 +169,7 @@ class LocalProxyServer(
                     return
                 }
 
-                forward(method, path, headers, input, output)
+                forward(method, path, headers, input, output, remoteAddress, queueWaitMillis)
             } catch (e: Exception) {
                 onLog(LogLevel.WARN, "Proxy request error: ${e.message}")
             }
@@ -173,6 +182,8 @@ class LocalProxyServer(
         headers: List<Pair<String, String>>,
         input: InputStream,
         output: BufferedOutputStream,
+        remoteAddress: String,
+        queueWaitMillis: Long,
     ) {
         val contentLength = headers.firstOrNull { it.first.equals("Content-Length", true) }
             ?.second?.trim()?.toLongOrNull() ?: 0L
@@ -200,9 +211,18 @@ class LocalProxyServer(
             output.flush()
         }
 
+        // Snapshot the upload (only when journaling audio) without altering the
+        // bytes streamed upstream. Oversized bodies simply aren't captured.
+        val capture = if (recorder?.captureAudio == true && hasBody) {
+            CapturingInputStream(input, AUDIO_CAPTURE_CAP)
+        } else {
+            null
+        }
+        val bodySource: InputStream = capture ?: input
+
         val body: RequestBody? = when {
             method == "GET" || method == "HEAD" -> null
-            hasBody -> streamingBody(input, contentLength, contentType)
+            hasBody -> streamingBody(bodySource, contentLength, contentType)
             else -> EMPTY_BODY
         }
 
@@ -212,9 +232,12 @@ class LocalProxyServer(
             .method(method, body)
             .build()
 
+        val startedAtNanos = System.nanoTime()
         try {
             client.newCall(request).execute().use { response ->
                 val bodyBytes = response.body?.bytes() ?: ByteArray(0)
+                val processingMillis = elapsedMillis(startedAtNanos)
+                val respContentType = response.header("Content-Type")
                 val sb = StringBuilder()
                 sb.append("HTTP/1.1 ${response.code} ${response.message}\r\n")
                 for ((name, value) in response.headers) {
@@ -227,11 +250,106 @@ class LocalProxyServer(
                 output.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
                 output.write(bodyBytes)
                 output.flush()
+
+                journal(
+                    remoteAddress, queueWaitMillis, processingMillis, response.code,
+                    respContentType, bodyBytes, capture?.captured(), contentType,
+                )
             }
         } catch (e: Exception) {
             // Upstream not reachable (server still starting or crashed).
+            val processingMillis = elapsedMillis(startedAtNanos)
             writeResponse(output, 502, "Bad Gateway", ERR_BAD_GATEWAY)
+            journal(
+                remoteAddress, queueWaitMillis, processingMillis, 502,
+                null, null, capture?.captured(), contentType,
+                errorOverride = "Whisper server not reachable",
+            )
         }
+    }
+
+    private fun elapsedMillis(startNanos: Long): Long =
+        ((System.nanoTime() - startNanos) / 1_000_000).coerceAtLeast(0)
+
+    /** Build and hand a [TranscriptionRecord] to the recorder (best-effort). */
+    private fun journal(
+        remoteAddress: String,
+        queueWaitMillis: Long,
+        processingMillis: Long,
+        status: Int,
+        responseContentType: String?,
+        responseBody: ByteArray?,
+        capturedRequest: ByteArray?,
+        requestContentType: String?,
+        errorOverride: String? = null,
+    ) {
+        val rec = recorder ?: return
+        try {
+            val success = status in 200..299
+            val id = rec.nextId()
+
+            val text = if (success && responseBody != null) {
+                extractTranscript(responseBody, responseContentType)
+            } else {
+                ""
+            }
+            val error = when {
+                success -> null
+                errorOverride != null -> errorOverride
+                responseBody != null -> extractError(responseBody).ifBlank { "HTTP $status" }
+                else -> "HTTP $status"
+            }
+
+            // Pull the audio file part out of the captured multipart body.
+            var audioBytes = 0L
+            var durationMillis = 0L
+            var audioFileName: String? = null
+            val boundary = MultipartAudio.boundaryOf(requestContentType)
+            if (rec.captureAudio && capturedRequest != null && boundary != null) {
+                MultipartAudio.extractFile(capturedRequest, boundary)?.let { part ->
+                    audioBytes = part.bytes.size.toLong()
+                    durationMillis = MultipartAudio.durationMillis(part.bytes)
+                    val ext = MultipartAudio.extensionFor(part.filename, part.contentType)
+                    audioFileName = rec.saveAudio(id, ext, part.bytes)
+                }
+            }
+
+            rec.record(
+                TranscriptionRecord(
+                    id = id,
+                    timestampMillis = System.currentTimeMillis(),
+                    remoteAddress = remoteAddress,
+                    success = success,
+                    httpStatus = status,
+                    modelId = modelId,
+                    audioBytes = audioBytes,
+                    audioDurationMillis = durationMillis,
+                    queueWaitMillis = queueWaitMillis,
+                    processingMillis = processingMillis,
+                    text = text,
+                    errorMessage = error,
+                    audioFileName = audioFileName,
+                ),
+            )
+        } catch (e: Exception) {
+            onLog(LogLevel.DEBUG, "Failed to journal request: ${e.message}")
+        }
+    }
+
+    /** Recognized text from a whisper response: JSON `text` field, else plain body. */
+    private fun extractTranscript(body: ByteArray, contentType: String?): String {
+        val text = String(body, Charsets.UTF_8)
+        return if (contentType?.contains("json", true) == true || text.trimStart().startsWith("{")) {
+            jsonStringField(text, "text") ?: text.trim()
+        } else {
+            text.trim()
+        }
+    }
+
+    /** Best-effort error message from an error JSON body. */
+    private fun extractError(body: ByteArray): String {
+        val text = String(body, Charsets.UTF_8)
+        return jsonStringField(text, "message") ?: text.trim().take(200)
     }
 
     private fun streamingBody(input: InputStream, length: Long, contentTypeHeader: String?): RequestBody =
@@ -250,6 +368,51 @@ class LocalProxyServer(
                 }
             }
         }
+
+    /**
+     * Extract a top-level JSON string field's value, decoding common escapes.
+     * Tiny and forgiving — good enough for whisper's `{"text":"…"}` responses
+     * without pulling in a JSON dependency.
+     */
+    private fun jsonStringField(json: String, field: String): String? {
+        val key = "\"$field\""
+        var i = json.indexOf(key)
+        if (i < 0) return null
+        i += key.length
+        while (i < json.length && json[i].let { it == ' ' || it == '\t' || it == '\n' || it == '\r' || it == ':' }) i++
+        if (i >= json.length || json[i] != '"') return null
+        i++
+        val sb = StringBuilder()
+        while (i < json.length) {
+            val c = json[i]
+            when {
+                c == '\\' -> {
+                    i++
+                    if (i >= json.length) break
+                    when (val e = json[i]) {
+                        'n' -> sb.append('\n')
+                        't' -> sb.append('\t')
+                        'r' -> sb.append('\r')
+                        'b' -> sb.append('\b')
+                        '"' -> sb.append('"')
+                        '\\' -> sb.append('\\')
+                        '/' -> sb.append('/')
+                        'u' -> {
+                            if (i + 4 < json.length) {
+                                json.substring(i + 1, i + 5).toIntOrNull(16)?.let { sb.append(it.toChar()) }
+                                i += 4
+                            }
+                        }
+                        else -> sb.append(e)
+                    }
+                }
+                c == '"' -> return sb.toString()
+                else -> sb.append(c)
+            }
+            i++
+        }
+        return sb.toString()
+    }
 
     private fun isAuthorized(headers: List<Pair<String, String>>): Boolean {
         val auth = headers.firstOrNull { it.first.equals("Authorization", true) }?.second?.trim()
@@ -319,6 +482,10 @@ class LocalProxyServer(
         private const val MAX_WORKERS = 16
         private const val MAX_QUEUE = 32
         private const val SOCKET_TIMEOUT_MS = 30_000
+
+        // Upper bound on a captured upload body kept in memory to cache its audio.
+        // Larger uploads still transcribe; they just aren't retained for replay.
+        private const val AUDIO_CAPTURE_CAP = 8 * 1024 * 1024 // 8 MB
 
         private val HOP_BY_HOP = setOf(
             "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",

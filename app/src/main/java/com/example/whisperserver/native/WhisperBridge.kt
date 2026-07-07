@@ -2,10 +2,12 @@ package com.example.whisperserver.native
 
 import android.content.Context
 import android.util.Log
+import com.example.whisperserver.WhisperApp
 import com.example.whisperserver.data.ServerConfig
 import com.example.whisperserver.service.LogLevel
 import com.example.whisperserver.service.ServerController
 import com.example.whisperserver.service.ServerState
+import com.example.whisperserver.service.TranscriptionRecord
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -52,6 +54,17 @@ class WhisperBridge(
     private var proxy: LocalProxyServer? = null
     private var spec: LaunchSpec? = null
     private var internalPort: Int = 0
+
+    // Bounded cache of recent uploads, replayed from the transcription detail
+    // screen. The recorder journals each request and persists its audio here.
+    private val audioStore = WhisperApp.container(context).audioStore
+    private val recorder = object : TranscriptionRecorder {
+        override val captureAudio: Boolean = true
+        override fun nextId(): Long = ServerController.nextRecordId()
+        override fun record(record: TranscriptionRecord) = ServerController.recordTranscription(record)
+        override fun saveAudio(id: Long, ext: String, bytes: ByteArray): String? =
+            audioStore.save(id, ext, bytes)
+    }
 
     @Volatile
     private var intentionalStop = false
@@ -129,6 +142,8 @@ class WhisperBridge(
         crashTimestamps.clear()
         ServerController.setState(ServerState.Starting)
         ServerController.onServerStarted()
+        // Records reset on (re)start; drop stale cached audio to match.
+        audioStore.clear()
 
         // Start the native server (bound to localhost). launchProcess reports its
         // own fatal error and tears down on failure.
@@ -206,6 +221,8 @@ class WhisperBridge(
                 apiKey = launchSpec.apiKey,
                 inferencePath = inferencePath,
                 onLog = ::handleLog,
+                modelId = launchSpec.config.selectedModelId,
+                recorder = recorder,
             ).also { it.start() }
             true
         } catch (e: Exception) {
@@ -252,25 +269,6 @@ class WhisperBridge(
 
     private fun handleLog(level: LogLevel, line: String) {
         ServerController.appendLog(level, line)
-        maybeRecordStats(line)
-    }
-
-    /**
-     * Best-effort stats extraction from the server's log output. Formats vary by
-     * whisper.cpp version, so this is heuristic: it counts requests hitting the
-     * inference path and, when present, parses a processing/total time in ms.
-     */
-    private fun maybeRecordStats(line: String) {
-        // Skip our own command echo (ServerProcess logs it as "$ <cmd>"), which
-        // contains the inference path and would otherwise be counted as a request.
-        if (line.startsWith("$ ")) return
-        val lower = line.lowercase()
-        val isRequest = inferencePath in line ||
-            (("post" in lower || "request" in lower) && "audio" in lower)
-        if (isRequest) {
-            val ms = TIME_MS_REGEX.find(lower)?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.toLong()
-            ServerController.recordRequest(ms)
-        }
     }
 
     private fun handleExit(gen: Int, code: Int) {
@@ -358,6 +356,5 @@ class WhisperBridge(
         // Readiness poll for the internal server: up to ~8s (40 × 200ms).
         private const val READY_MAX_ATTEMPTS = 40
         private const val READY_POLL_MS = 200L
-        private val TIME_MS_REGEX = Regex("""(\d+(?:\.\d+)?)\s*ms""")
     }
 }

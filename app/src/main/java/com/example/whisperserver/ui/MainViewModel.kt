@@ -15,6 +15,7 @@ import com.example.whisperserver.network.HostOption
 import com.example.whisperserver.network.TailscaleDetector
 import com.example.whisperserver.service.LogLevel
 import com.example.whisperserver.service.ServerController
+import com.example.whisperserver.service.TranscriptionRecord
 import com.example.whisperserver.service.WhisperServerService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,10 +62,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val container = WhisperApp.container(app)
 
-    // Server / logs / stats come straight from the process-wide controller.
+    // Server / logs / stats / records come straight from the process-wide controller.
     val serverState = ServerController.state
     val logs = ServerController.logs
     val stats = ServerController.stats
+    val records = ServerController.records
+
+    /** The cached audio clip for a record, or null if it wasn't retained. */
+    fun audioFile(record: TranscriptionRecord): java.io.File? =
+        container.audioStore.file(record.audioFileName)
+
+    /** Remove a record from the journal and delete its cached audio. */
+    fun deleteRecord(record: TranscriptionRecord) {
+        container.audioStore.delete(record.audioFileName)
+        ServerController.removeRecord(record.id)
+    }
 
     private val downloadStates = MutableStateFlow<Map<String, DownloadUiState>>(emptyMap())
     private val refreshTick = MutableStateFlow(0)
