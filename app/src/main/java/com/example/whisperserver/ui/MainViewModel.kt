@@ -18,6 +18,7 @@ import com.example.whisperserver.service.ServerController
 import com.example.whisperserver.service.WhisperServerService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -76,44 +77,67 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // (delivered as DownloadResult.Paused) is not mistaken for a pause.
     private val canceledIds = mutableSetOf<String>()
 
+    // Heavy per-model state (disk I/O + memory/storage guard). Recomputed only
+    // when config or an explicit refresh changes — NOT on download-progress
+    // ticks, which fire ~10x/s. See [uiState] for the cheap overlay.
+    private val modelRows: Flow<List<ModelRow>> = combine(
+        container.configRepository.config,
+        refreshTick,
+    ) { config, _ ->
+        ModelRegistry.models.map { model ->
+            val partial = container.modelDownloader.partialBytes(model)
+            val downloaded = container.modelDownloader.isDownloaded(model)
+            ModelRow(
+                model = model,
+                isDownloaded = downloaded,
+                isSelected = config.selectedModelId == model.id,
+                // Storage guard accounts for a partial (paused) download so it
+                // only requires the remaining bytes.
+                guard = container.memoryChecker.evaluate(model, alreadyDownloadedBytes = partial),
+                defaultDownload = if (!downloaded && partial > 0) {
+                    DownloadUiState.Paused(partial)
+                } else {
+                    DownloadUiState.Idle
+                },
+            )
+        }
+    }.flowOn(Dispatchers.IO)
+
     val uiState: StateFlow<MainUiState> = combine(
         container.configRepository.config,
+        modelRows,
         downloadStates,
         secrets,
         hostOptions,
-        refreshTick,
-    ) { config, downloads, secretsState, hosts, _ ->
+    ) { config, rows, downloads, secretsState, hosts ->
+        // Cheap overlay only: no disk I/O or interface enumeration here, so
+        // frequent download-progress emissions stay lightweight.
         MainUiState(
             config = config,
             hostOptions = hosts,
             hasApiKey = secretsState.hasApiKey,
             hasHfToken = secretsState.hasHfToken,
-            tailscaleIp = TailscaleDetector.tailscaleAddress(),
-            models = ModelRegistry.models.map { model ->
+            tailscaleIp = hosts.firstOrNull { it.isTailscale }?.address,
+            models = rows.map { row ->
                 ModelUiState(
-                    model = model,
-                    isDownloaded = container.modelDownloader.isDownloaded(model),
-                    isSelected = config.selectedModelId == model.id,
-                    // Storage guard accounts for a partial (paused) download so it
-                    // only requires the remaining bytes.
-                    guard = container.memoryChecker.evaluate(
-                        model,
-                        alreadyDownloadedBytes = container.modelDownloader.partialBytes(model),
-                    ),
-                    download = downloads[model.id] ?: defaultDownloadState(model),
+                    model = row.model,
+                    isDownloaded = row.isDownloaded,
+                    isSelected = row.isSelected,
+                    guard = row.guard,
+                    download = downloads[row.model.id] ?: row.defaultDownload,
                 )
             },
         )
-    }.flowOn(Dispatchers.IO).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
 
-    private fun defaultDownloadState(model: WhisperModel): DownloadUiState {
-        val partial = container.modelDownloader.partialBytes(model)
-        return if (!container.modelDownloader.isDownloaded(model) && partial > 0) {
-            DownloadUiState.Paused(partial)
-        } else {
-            DownloadUiState.Idle
-        }
-    }
+    /** Heavy, config-derived row state (recomputed off the download hot path). */
+    private data class ModelRow(
+        val model: WhisperModel,
+        val isDownloaded: Boolean,
+        val isSelected: Boolean,
+        val guard: MemoryGuardResult,
+        val defaultDownload: DownloadUiState,
+    )
 
     // ---- Config setters -----------------------------------------------------
 
