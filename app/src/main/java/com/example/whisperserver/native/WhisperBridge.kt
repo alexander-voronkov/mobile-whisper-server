@@ -60,6 +60,10 @@ class WhisperBridge(
     // Sliding window of recent crash timestamps for the restart budget.
     private val crashTimestamps = ArrayDeque<Long>()
 
+    // Directory holding an `ffmpeg` symlink (when a build bundled ffmpeg), added
+    // to PATH so whisper-server's --convert can find it. Null when unavailable.
+    private var ffmpegBinDir: File? = null
+
     /**
      * The server executable. Packaged as `libwhisper-server.so` in jniLibs so
      * that at install time it lands in nativeLibraryDir, which is one of the few
@@ -70,6 +74,33 @@ class WhisperBridge(
     fun isBinaryAvailable(): Boolean = binaryFile().let { it.exists() && it.canExecute() }
 
     private fun ffmpegBinary(): File = File(context.applicationInfo.nativeLibraryDir, FFMPEG_SO)
+
+    /**
+     * whisper-server's `--convert` shells out to an executable named `ffmpeg`
+     * found on PATH — not a `lib*.so`. If a build bundled ffmpeg as
+     * `libffmpeg.so` (the only way to ship an executable that lands in the
+     * exec-allowed nativeLibraryDir), expose it under the name `ffmpeg` via a
+     * symlink in filesDir/bin and return that dir to prepend to PATH.
+     *
+     * Returns null when no ffmpeg is bundled or the symlink can't be created, in
+     * which case `--convert` is not passed. Inert in the default build (no
+     * libffmpeg.so is shipped), so it never runs there.
+     */
+    private fun resolveFfmpegDir(): File? {
+        val lib = ffmpegBinary()
+        if (!lib.exists()) return null
+        return try {
+            val binDir = File(context.filesDir, "bin").apply { mkdirs() }
+            val link = File(binDir, "ffmpeg")
+            if (!link.exists()) {
+                android.system.Os.symlink(lib.absolutePath, link.absolutePath)
+            }
+            binDir
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not expose ffmpeg for --convert: ${e.message}")
+            null
+        }
+    }
 
     fun start(launchSpec: LaunchSpec) {
         if (process?.isRunning == true) {
@@ -105,13 +136,16 @@ class WhisperBridge(
     /** Returns true if the process was launched (false = fatal error already reported). */
     private fun launchProcess(launchSpec: LaunchSpec): Boolean {
         val gen = ++generation
+        ffmpegBinDir = resolveFfmpegDir()
         val command = buildCommand(launchSpec, internalPort)
+        val pathPrefix = listOfNotNull(ffmpegBinDir?.absolutePath, context.applicationInfo.nativeLibraryDir)
+            .joinToString(":")
         val proc = ServerProcess(
             command = command,
             workingDir = context.filesDir,
             environment = mapOf(
-                // Make bundled ffmpeg (if shipped) discoverable for --convert.
-                "PATH" to "${context.applicationInfo.nativeLibraryDir}:${System.getenv("PATH")}",
+                // Make bundled ffmpeg (if shipped, via the symlink) discoverable for --convert.
+                "PATH" to "$pathPrefix:${System.getenv("PATH")}",
                 "LD_LIBRARY_PATH" to context.applicationInfo.nativeLibraryDir,
             ),
             onLog = ::handleLog,
@@ -165,12 +199,15 @@ class WhisperBridge(
         args += listOf("--language", language)
         if (c.translate) args += "--translate"
         if (c.convertAudio) {
-            if (ffmpegBinary().exists()) {
+            // whisper-server's --convert execs an executable named `ffmpeg` on
+            // PATH. Only pass it when we've actually exposed one (see
+            // resolveFfmpegDir); otherwise the server would exit at startup.
+            if (ffmpegBinDir != null) {
                 args += "--convert"
             } else {
                 ServerController.appendLog(
                     LogLevel.WARN,
-                    "Convert-audio is enabled but no ffmpeg (libffmpeg.so) is bundled; skipping --convert. " +
+                    "Convert-audio is enabled but no ffmpeg executable is bundled; skipping --convert. " +
                         "Uploads must be 16 kHz WAV.",
                 )
             }
@@ -192,6 +229,9 @@ class WhisperBridge(
      * inference path and, when present, parses a processing/total time in ms.
      */
     private fun maybeRecordStats(line: String) {
+        // Skip our own command echo (ServerProcess logs it as "$ <cmd>"), which
+        // contains the inference path and would otherwise be counted as a request.
+        if (line.startsWith("$ ")) return
         val lower = line.lowercase()
         val isRequest = inferencePath in line ||
             (("post" in lower || "request" in lower) && "audio" in lower)
@@ -249,7 +289,11 @@ class WhisperBridge(
         proxy = null
         process?.stop() // returns immediately; teardown happens off-thread
         process = null
-        ServerController.setState(ServerState.Stopped)
+        // Don't clobber a fatal Error state during teardown (e.g. onDestroy after
+        // fail()); the user should still see the actionable error.
+        if (ServerController.state.value !is ServerState.Error) {
+            ServerController.setState(ServerState.Stopped)
+        }
         ServerController.onServerStopped()
     }
 

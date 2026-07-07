@@ -121,8 +121,12 @@ class WhisperServerService : Service() {
     private fun restartServer() {
         ServerController.appendLog(LogLevel.INFO, "Restart requested")
         bridge.stop()
+        // bridge.stop()/ServerProcess.stop() are asynchronous and may leave the
+        // old native server holding the internal port for up to ~3s (graceful
+        // wait) before it is force-killed. Wait past that window so the relaunch
+        // doesn't race the old process for the same 127.0.0.1:<internal> port.
         scope.launch {
-            delay(500)
+            delay(RESTART_GRACE_MS)
             startServer()
         }
     }
@@ -312,6 +316,8 @@ class WhisperServerService : Service() {
         private const val WARN_NOTIF_ID = 1002
         private const val WAKE_LOCK_TAG = "WhisperServer::ServerWakeLock"
         private const val MEMORY_SAMPLE_INTERVAL_MS = 10_000L
+        // Slightly longer than ServerProcess's 3s graceful-stop window.
+        private const val RESTART_GRACE_MS = 3_500L
 
         fun start(context: Context) = start(context, fromBoot = false)
 

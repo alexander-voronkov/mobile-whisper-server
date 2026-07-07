@@ -45,7 +45,9 @@ class LocalProxyServer(
     private var running = false
 
     private var acceptThread: Thread? = null
-    private val workers = Executors.newCachedThreadPool()
+    // Bounded pool so a burst of (possibly stalled) connections can't spawn
+    // unbounded threads. Stalled sockets are reaped by the read timeout below.
+    private val workers = Executors.newFixedThreadPool(MAX_WORKERS)
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -91,6 +93,10 @@ class LocalProxyServer(
     private fun handleConnection(socket: Socket) {
         socket.use {
             try {
+                // Per-read inactivity timeout: a client that connects and never
+                // sends (or stalls mid-stream) is dropped instead of pinning a
+                // worker thread forever. A steadily-uploading client won't trip it.
+                socket.soTimeout = SOCKET_TIMEOUT_MS
                 val input = BufferedInputStream(socket.getInputStream())
                 val output = BufferedOutputStream(socket.getOutputStream())
 
@@ -267,6 +273,8 @@ class LocalProxyServer(
     companion object {
         private const val MAX_LINE = 16 * 1024
         private const val MAX_HEADERS = 100
+        private const val MAX_WORKERS = 16
+        private const val SOCKET_TIMEOUT_MS = 30_000
 
         private val HOP_BY_HOP = setOf(
             "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
