@@ -14,7 +14,6 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 import com.example.whisperserver.MainActivity
 import com.example.whisperserver.R
 import com.example.whisperserver.WhisperApp
@@ -66,19 +65,17 @@ class WhisperServerService : Service() {
                 restartServer()
                 return START_STICKY
             }
-            else -> startServer(fromBoot = intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true)
+            else -> startServer()
         }
         return START_STICKY
     }
 
-    private fun startServer(fromBoot: Boolean = false) {
+    private fun startServer() {
         // Must call startForeground promptly after startForegroundService().
         try {
-            startAsForeground(buildNotification("Starting…", running = false), fromBoot)
+            startAsForeground(buildNotification("Starting…", running = false))
         } catch (e: Exception) {
-            // e.g. microphone FGS started without RECORD_AUDIO granted on API 34+.
-            val msg = "Cannot start foreground service: ${e.message}. " +
-                "Grant the microphone permission and try again."
+            val msg = "Cannot start foreground service: ${e.message}."
             ServerController.appendLog(LogLevel.ERROR, msg)
             ServerController.setState(ServerState.Error(msg))
             stopSelf()
@@ -184,23 +181,18 @@ class WhisperServerService : Service() {
 
     // ---- Foreground / notifications ----------------------------------------
 
-    private fun startAsForeground(notification: Notification, fromBoot: Boolean) {
-        // Choose the FGS type at runtime: "microphone" (per spec) when RECORD_AUDIO
-        // is granted, otherwise "dataSync". Starting a microphone-typed FGS on
-        // Android 14+ without the mic permission throws. When launched from a
-        // background BOOT_COMPLETED broadcast, a microphone FGS can't be started
-        // at all (even with the permission), so force dataSync there.
-        val type = when {
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> 0
-            !fromBoot && hasMicPermission() -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+    private fun startAsForeground(notification: Notification) {
+        // "specialUse" FGS type — a persistent local server. It can be started
+        // from a background BOOT_COMPLETED broadcast and has no dataSync time cap.
+        // The typed constant only exists / is enforced on Android 14+ (API 34);
+        // below that, foreground services don't require a matching type.
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
         }
         ServiceCompat.startForeground(this, NOTIF_ID, notification, type)
     }
-
-    private fun hasMicPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
 
     private fun updateNotification(notification: Notification) {
         NotificationManagerCompat.from(this).notify(NOTIF_ID, notification)
@@ -308,7 +300,6 @@ class WhisperServerService : Service() {
         const val ACTION_START = "com.example.whisperserver.action.START"
         const val ACTION_STOP = "com.example.whisperserver.action.STOP"
         const val ACTION_RESTART = "com.example.whisperserver.action.RESTART"
-        const val EXTRA_FROM_BOOT = "com.example.whisperserver.extra.FROM_BOOT"
 
         private const val CHANNEL_ID = "whisper_server"
         private const val WARN_CHANNEL_ID = "whisper_server_warn"
@@ -319,19 +310,8 @@ class WhisperServerService : Service() {
         // Slightly longer than ServerProcess's 3s graceful-stop window.
         private const val RESTART_GRACE_MS = 3_500L
 
-        fun start(context: Context) = start(context, fromBoot = false)
-
-        /**
-         * Start from a BOOT_COMPLETED broadcast. Signals the service to use the
-         * dataSync FGS type, since a microphone-typed FGS can't be started from a
-         * background broadcast on Android 14+.
-         */
-        fun startFromBoot(context: Context) = start(context, fromBoot = true)
-
-        private fun start(context: Context, fromBoot: Boolean) {
-            val intent = Intent(context, WhisperServerService::class.java)
-                .setAction(ACTION_START)
-                .putExtra(EXTRA_FROM_BOOT, fromBoot)
+        fun start(context: Context) {
+            val intent = Intent(context, WhisperServerService::class.java).setAction(ACTION_START)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

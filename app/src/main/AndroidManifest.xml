@@ -5,21 +5,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!--
+        The server uses the "specialUse" foreground-service type: it runs a
+        persistent local HTTP server, which fits no other FGS category. Unlike
+        "microphone"/"dataSync", specialUse can be started from a background
+        BOOT_COMPLETED broadcast on Android 14/15 and has no dataSync 6h/24h cap,
+        and it needs no RECORD_AUDIO permission.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!--
-        RECORD_AUDIO enables the "microphone" foreground-service type (per spec).
-        The service declares both "microphone" and "dataSync" types and picks one
-        at runtime: microphone when RECORD_AUDIO is granted, otherwise dataSync.
-        dataSync is also what makes autostart-on-boot work — a microphone-typed
-        FGS cannot be started from a background BOOT_COMPLETED broadcast on
-        Android 14+, whereas dataSync can.
-    -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".WhisperApp"
@@ -48,7 +44,11 @@
         <service
             android:name=".service.WhisperServerService"
             android:exported="false"
-            android:foregroundServiceType="microphone|dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs a persistent on-device whisper.cpp HTTP transcription server for the local network / Tailscale." />
+        </service>
 
         <receiver
             android:name=".service.BootReceiver"

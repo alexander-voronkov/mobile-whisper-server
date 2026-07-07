@@ -166,15 +166,17 @@ blocked from Large-v3, matching the acceptance criteria.
 ## Permissions
 
 `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`,
-`FOREGROUND_SERVICE_MICROPHONE`, `FOREGROUND_SERVICE_DATA_SYNC`,
-`RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK`, `POST_NOTIFICATIONS`, `RECORD_AUDIO`.
+`FOREGROUND_SERVICE_SPECIAL_USE`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK`,
+`POST_NOTIFICATIONS`.
 
-> **Foreground-service type:** the service declares both `microphone` and
-> `dataSync` and picks one at runtime — `microphone` (per spec) when
-> `RECORD_AUDIO` is granted, otherwise `dataSync`. This also fixes autostart:
-> a microphone-typed FGS can't be started from a background `BOOT_COMPLETED`
-> broadcast on Android 14+, but `dataSync` can, so boot autostart falls back to
-> `dataSync`.
+> **Foreground-service type:** the service uses **`specialUse`** (a persistent
+> local HTTP server fits no other FGS category). This deviates from the spec's
+> `microphone` type on purpose: on Android 14/15 a `microphone`/`dataSync` FGS
+> **cannot** be started from a background `BOOT_COMPLETED` broadcast (so
+> autostart would fail), and `dataSync` is additionally capped at 6h/24h.
+> `specialUse` starts from boot, has no time cap, and needs no `RECORD_AUDIO`.
+> The manifest declares `PROPERTY_SPECIAL_USE_FGS_SUBTYPE`; Google Play review
+> would ask to justify it (irrelevant for sideloaded / self-hosted use).
 
 ## Known limitations
 

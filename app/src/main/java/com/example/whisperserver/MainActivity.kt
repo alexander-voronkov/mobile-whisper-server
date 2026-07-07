@@ -65,17 +65,16 @@ private enum class Tab(val label: String, val icon: ImageVector) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WhisperServerApp(viewModel: MainViewModel = viewModel()) {
-    // Request the runtime permissions the server needs. RECORD_AUDIO is required
-    // for a microphone-typed foreground service on Android 14+.
+    // Request POST_NOTIFICATIONS (Android 13+) for the persistent server
+    // notification. The specialUse foreground service needs no other runtime
+    // permission.
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { }
     LaunchedEffect(Unit) {
-        val perms = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
-            add(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
         }
-        permissionLauncher.launch(perms.toTypedArray())
         viewModel.refresh()
     }
 
