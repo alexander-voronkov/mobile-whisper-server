@@ -174,17 +174,22 @@ class WhisperBridge(
         // own fatal error and tears down on failure.
         if (!launchProcess(launchSpec)) return
 
+        // Snapshot the launch generation. If the process dies before it binds and
+        // handleExit() reports it — bumping generation via fail()/restart — this
+        // readiness watcher must not overwrite that specific error (e.g. the
+        // illegal-instruction message) with a generic "did not start listening".
+        val startGeneration = generation
         // Publish the public proxy only once whisper-server is actually listening
         // on the internal port, so we never forward LAN/Tailscale traffic before
         // it is bound (or, if the port were occupied, to some other process).
         scope.launch {
             if (!waitForServerReady()) {
-                if (!intentionalStop) {
+                if (!intentionalStop && generation == startGeneration) {
                     fail("whisper-server did not start listening on 127.0.0.1:$internalPort")
                 }
                 return@launch
             }
-            if (!intentionalStop) startProxy(launchSpec)
+            if (!intentionalStop && generation == startGeneration) startProxy(launchSpec)
         }
     }
 
