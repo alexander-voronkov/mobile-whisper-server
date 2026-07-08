@@ -37,7 +37,11 @@ ABIS="${ABIS:-arm64-v8a armeabi-v7a}"
 # so it will SIGILL on a true ARMv8.0-only device. Override for such devices with
 # `ARM64_CPU_ARCH=` (empty) to fall back to the portable baseline. i8mm/sve are
 # intentionally NOT enabled — the A76 lacks them and would fault.
-ARM64_CPU_ARCH="${ARM64_CPU_ARCH:-armv8.2-a+fp16+dotprod}"
+#
+# `-` (not `:-`): substitute the default only when ARM64_CPU_ARCH is *unset*. An
+# explicitly empty `ARM64_CPU_ARCH=` must stay empty so the escape hatch actually
+# disables the -march tuning (`:-` would treat empty as unset and restore it).
+ARM64_CPU_ARCH="${ARM64_CPU_ARCH-armv8.2-a+fp16+dotprod}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
