@@ -171,14 +171,13 @@ class WhisperBridge(
         audioStore.clear()
 
         // Start the native server (bound to localhost). launchProcess reports its
-        // own fatal error and tears down on failure.
-        if (!launchProcess(launchSpec)) return
-
-        // Snapshot the launch generation. If the process dies before it binds and
-        // handleExit() reports it — bumping generation via fail()/restart — this
-        // readiness watcher must not overwrite that specific error (e.g. the
-        // illegal-instruction message) with a generic "did not start listening".
-        val startGeneration = generation
+        // own fatal error and tears down on failure, and returns the launch
+        // generation captured *before* the process could exit. If the process dies
+        // before it binds and handleExit() reports it — bumping generation via
+        // fail()/restart — this readiness watcher must not overwrite that specific
+        // error (e.g. the illegal-instruction message) with a generic
+        // "did not start listening".
+        val startGeneration = launchProcess(launchSpec) ?: return
         // Publish the public proxy only once whisper-server is actually listening
         // on the internal port, so we never forward LAN/Tailscale traffic before
         // it is bound (or, if the port were occupied, to some other process).
@@ -209,8 +208,13 @@ class WhisperBridge(
         false
     }
 
-    /** Returns true if the process was launched (false = fatal error already reported). */
-    private fun launchProcess(launchSpec: LaunchSpec): Boolean {
+    /**
+     * Launches the process and returns its launch generation, or null on a fatal
+     * error (already reported). Returning the generation captured *before*
+     * `proc.start()` lets the readiness watcher detect a same-launch process that
+     * has already died (SIGILL) and bumped [generation] via handleExit()/fail().
+     */
+    private fun launchProcess(launchSpec: LaunchSpec): Int? {
         val gen = ++generation
         ffmpegBinDir = resolveFfmpegDir()
         val command = buildCommand(launchSpec, internalPort)
@@ -233,12 +237,12 @@ class WhisperBridge(
             ServerController.setState(
                 ServerState.Running(launchSpec.config.host, launchSpec.config.port, launchSpec.config.selectedModelId),
             )
-            true
+            gen
         } catch (e: Exception) {
             // ProcessBuilder.start() can throw (exec format error, permission denied).
             Log.e(TAG, "Failed to start server process", e)
             fail("Failed to start whisper-server: ${e.message}")
-            false
+            null
         }
     }
 
