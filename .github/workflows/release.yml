@@ -1,9 +1,12 @@
 name: Build & Release APK
 
-# Builds an installable APK and publishes it as a GitHub Release named
-# "0.<build-number>" on every push to a build branch (and on-demand).
-# Pull requests run the build job only (a compile check + APK artifact); they
-# never publish a release and run with a read-only token.
+# Two paths:
+#  - Pull requests -> a fast, read-only CHECK: compile the app + run unit tests
+#    (no native cross-compile, no APK packaging, no release). Just proves the
+#    code still builds.
+#  - Push to main (a merge) or manual dispatch -> the full RELEASE: cross-compile
+#    the native whisper-server, assemble the APK, and publish a numbered GitHub
+#    Release "0.<run>".
 #
 # The release APK is the *debug* variant so it is signed with a keystore and
 # installs without extra setup. NOTE: the debug keystore is generated fresh on
@@ -19,26 +22,57 @@ on:
   push:
     branches:
       - main
-      - "claude/android-whisper-server-g0b0wg"
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  # Lightweight compile + unit-test check for pull requests. Read-only token,
+  # no native build, no APK, no release — just "does it still build?".
+  pr-check:
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    # Read-only: PR code runs here, so it must not be able to push or release.
     permissions:
       contents: read
-    outputs:
-      name: ${{ steps.ver.outputs.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Don't leave the job token available to later git commands.
           persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # Compiles the app (Kotlin + resources + manifest + R) and runs the unit
+      # tests. Does NOT cross-compile the native server or package the APK.
+      - name: Compile + unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+  # Full build + publish. Runs only on a push to main (merge) or manual dispatch.
+  release:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -67,16 +101,12 @@ jobs:
       # Best effort: cross-compile the native whisper-server so the released APK
       # can actually run the server. If this fails (e.g. toolchain issues), the
       # build continues and ships an APK whose UI works but that reports
-      # "binary not found" until a native lib is provided. Remove this step to
-      # speed up releases if you don't need the bundled server binary.
+      # "binary not found" until a native lib is provided.
       - name: Build native whisper-server (best effort, arm64-v8a + armeabi-v7a)
         continue-on-error: true
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
           echo "Using NDK at ${ANDROID_NDK_HOME:-<none>}"
-          # Build both ABIs the app declares in abiFilters (arm64 primary is
-          # built first, so if the 32-bit build fails the release still ships
-          # a working arm64 binary).
           ABIS="arm64-v8a armeabi-v7a" ./gradlew buildWhisperNative --no-daemon --stacktrace
 
       - name: Run unit tests
@@ -101,30 +131,15 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
 
-  # Publishing runs in a separate job with write scope, and never for pull
-  # requests — so unreviewed PR code can't reach a write-enabled token.
-  release:
-    needs: build
-    if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download APK artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: WhisperServer-${{ needs.build.outputs.name }}
-          path: dist
-
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "v${{ needs.build.outputs.name }}" \
-            "dist/WhisperServer-${{ needs.build.outputs.name }}.apk" \
-            --title "${{ needs.build.outputs.name }}" \
+          gh release create "v${{ steps.ver.outputs.name }}" \
+            "dist/WhisperServer-${{ steps.ver.outputs.name }}.apk" \
+            --title "${{ steps.ver.outputs.name }}" \
             --target "${{ github.sha }}" \
-            --notes "Automated build **${{ needs.build.outputs.name }}** (run #${{ github.run_number }}) from \`${{ github.sha }}\`.
+            --notes "Automated build **${{ steps.ver.outputs.name }}** (run #${{ github.run_number }}) from \`${{ github.sha }}\`.
 
-          Install the attached \`WhisperServer-${{ needs.build.outputs.name }}.apk\` (enable *Install unknown apps* on the device). This is a debug-signed build; uninstall a previous build before updating if the signature differs."
+          Install the attached \`WhisperServer-${{ steps.ver.outputs.name }}.apk\` (enable *Install unknown apps* on the device). This is a debug-signed build; uninstall a previous build before updating if the signature differs."
