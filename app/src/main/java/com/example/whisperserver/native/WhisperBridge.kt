@@ -109,7 +109,19 @@ class WhisperBridge(
         return try {
             val binDir = File(context.filesDir, "bin").apply { mkdirs() }
             val link = File(binDir, "ffmpeg")
-            if (!link.exists()) {
+            // A symlink left by a previous install can dangle: its target was the
+            // old nativeLibraryDir, which changes across APK updates. link.exists()
+            // follows the (now-missing) target and returns false, yet the link path
+            // still exists, so Os.symlink would fail EEXIST and --convert would be
+            // skipped despite the new APK bundling libffmpeg.so. Recreate the link
+            // unless it already points at the current binary.
+            val currentTarget = try {
+                android.system.Os.readlink(link.absolutePath)
+            } catch (e: Exception) {
+                null // link absent (ENOENT) or unreadable — treat as needs-creating
+            }
+            if (currentTarget != lib.absolutePath) {
+                link.delete() // removes a stale/dangling symlink; no-op if absent
                 android.system.Os.symlink(lib.absolutePath, link.absolutePath)
             }
             binDir

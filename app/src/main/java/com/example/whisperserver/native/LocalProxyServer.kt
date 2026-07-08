@@ -233,11 +233,26 @@ class LocalProxyServer(
             .build()
 
         val startedAtNanos = System.nanoTime()
+        // Whether the request was already journaled (from the success path). Guards
+        // the catch below so a broken *client* write doesn't re-journal a request
+        // we already accounted for as a success.
+        var journaled = false
         try {
             client.newCall(request).execute().use { response ->
                 val bodyBytes = response.body?.bytes() ?: ByteArray(0)
                 val processingMillis = elapsedMillis(startedAtNanos)
                 val respContentType = response.header("Content-Type")
+
+                // Journal BEFORE writing back to the client. If the client has timed
+                // out or disconnected, the output.write/flush below can throw, and
+                // this is the sole source of request accounting — we must not lose a
+                // completed transcription from the Journal/stats.
+                journal(
+                    remoteAddress, queueWaitMillis, processingMillis, response.code,
+                    respContentType, bodyBytes, capture?.captured(), contentType,
+                )
+                journaled = true
+
                 val sb = StringBuilder()
                 sb.append("HTTP/1.1 ${response.code} ${response.message}\r\n")
                 for ((name, value) in response.headers) {
@@ -250,21 +265,23 @@ class LocalProxyServer(
                 output.write(sb.toString().toByteArray(Charsets.ISO_8859_1))
                 output.write(bodyBytes)
                 output.flush()
-
-                journal(
-                    remoteAddress, queueWaitMillis, processingMillis, response.code,
-                    respContentType, bodyBytes, capture?.captured(), contentType,
-                )
             }
         } catch (e: Exception) {
-            // Upstream not reachable (server still starting or crashed).
-            val processingMillis = elapsedMillis(startedAtNanos)
-            writeResponse(output, 502, "Bad Gateway", ERR_BAD_GATEWAY)
-            journal(
-                remoteAddress, queueWaitMillis, processingMillis, 502,
-                null, null, capture?.captured(), contentType,
-                errorOverride = "Whisper server not reachable",
-            )
+            // Only reached for an upstream failure *before* we journaled the success
+            // (server still starting/crashed, or the response read broke). A failure
+            // after `journaled` is just the client write breaking — don't double-count.
+            if (!journaled) {
+                val processingMillis = elapsedMillis(startedAtNanos)
+                journal(
+                    remoteAddress, queueWaitMillis, processingMillis, 502,
+                    null, null, capture?.captured(), contentType,
+                    errorOverride = "Whisper server not reachable",
+                )
+                try {
+                    writeResponse(output, 502, "Bad Gateway", ERR_BAD_GATEWAY)
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -284,6 +301,12 @@ class LocalProxyServer(
         errorOverride: String? = null,
     ) {
         val rec = recorder ?: return
+        // Drop journals from a stopped proxy. On Restart/Stop this instance's
+        // running flag flips to false, a fresh LocalProxyServer is created, and
+        // ServerController.onServerStarted() clears the records/audio; a slow old
+        // worker finishing afterwards must not insert a stale record (old model,
+        // wrong run) into the new run's Journal/stats.
+        if (!running) return
         try {
             val success = status in 200..299
             val id = rec.nextId()
