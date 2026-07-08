@@ -38,10 +38,10 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        ndk {
-            // Primary target arm64-v8a, secondary armeabi-v7a per the spec.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
+        // NOTE: ABI selection lives in the `splits { abi { ... } }` block below
+        // (primary arm64-v8a, secondary armeabi-v7a). AGP forbids setting
+        // defaultConfig.ndk.abiFilters at the same time as ABI split includes,
+        // so the abiFilters entry that used to be here has moved into splits.
 
         // Surface the pinned whisper.cpp revision to code / about screen.
         buildConfigField("String", "WHISPER_COMMIT", "\"$whisperCommit\"")
