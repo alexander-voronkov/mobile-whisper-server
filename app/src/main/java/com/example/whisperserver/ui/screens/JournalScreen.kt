@@ -24,13 +24,16 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -47,6 +50,7 @@ import com.example.whisperserver.ui.components.RowDivider
 import com.example.whisperserver.ui.components.ScreenHeader
 import com.example.whisperserver.ui.theme.appColors
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private const val PAGE_SIZE = 20
 
@@ -59,10 +63,12 @@ enum class DateRange(val label: String, val windowMillis: Long) {
 
 enum class StatusFilter(val label: String) { All("All"), Success("Success"), Failed("Failed") }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JournalScreen(
     records: List<TranscriptionRecord>,
     onOpenRecord: (TranscriptionRecord) -> Unit,
+    onRefresh: () -> Unit = {},
 ) {
     val c = appColors
     var dateRange by remember { mutableStateOf(DateRange.Last7) }
@@ -96,6 +102,23 @@ fun JournalScreen(
                 visibleCount += PAGE_SIZE
             }
         }
+    }
+
+    val scope = rememberCoroutineScope()
+    var isRefreshing by remember { mutableStateOf(false) }
+    // Records are held live in memory, so a pull-to-refresh has nothing to fetch;
+    // it re-runs the host/model recompute, resets the reveal window, scrolls to the
+    // top, and shows the spinner briefly for tactile feedback.
+    val doRefresh: () -> Unit = {
+        scope.launch {
+            isRefreshing = true
+            onRefresh()
+            visibleCount = PAGE_SIZE
+            runCatching { listState.scrollToItem(0) }
+            delay(500)
+            isRefreshing = false
+        }
+        Unit
     }
 
     Column(Modifier.fillMaxSize().background(c.screen)) {
@@ -152,51 +175,69 @@ fun JournalScreen(
             return@Column
         }
 
-        LazyColumn(
-            state = listState,
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = doRefresh,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            items(groups.size) { gi ->
-                val group = groups[gi]
-                Column {
-                    Text(
-                        "${group.label} · ${dayCounts[group.label] ?: group.rows.size}",
-                        color = c.textSecondary,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 0.4.sp,
-                        modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 6.dp),
-                    )
-                    CompactCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                        Column {
-                            group.rows.forEachIndexed { i, r ->
-                                if (i > 0) RowDivider()
-                                JournalRow(r) { onOpenRecord(r) }
-                            }
+            JournalList(listState, groups, dayCounts, hasMore, onOpenRecord)
+        }
+    }
+}
+
+@Composable
+private fun JournalList(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    groups: List<DayGroup>,
+    dayCounts: Map<String, Int>,
+    hasMore: Boolean,
+    onOpenRecord: (TranscriptionRecord) -> Unit,
+) {
+    val c = appColors
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items(groups.size) { gi ->
+            val group = groups[gi]
+            Column {
+                Text(
+                    "${group.label} · ${dayCounts[group.label] ?: group.rows.size}",
+                    color = c.textSecondary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.4.sp,
+                    modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 6.dp),
+                )
+                CompactCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                    Column {
+                        group.rows.forEachIndexed { i, r ->
+                            if (i > 0) RowDivider()
+                            JournalRow(r) { onOpenRecord(r) }
                         }
                     }
                 }
             }
-            if (hasMore) {
-                item {
-                    Row(
-                        Modifier.fillMaxWidth().padding(14.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CircularProgressIndicator(
-                            Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = c.textSecondary,
-                        )
-                        Text(
-                            "  Loading $PAGE_SIZE more…",
-                            color = c.textSecondary,
-                            fontSize = 11.sp,
-                        )
-                    }
+        }
+        if (hasMore) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = c.textSecondary,
+                    )
+                    Text(
+                        "  Loading $PAGE_SIZE more…",
+                        color = c.textSecondary,
+                        fontSize = 11.sp,
+                    )
                 }
             }
         }

@@ -115,11 +115,13 @@ private fun WhisperServerApp(viewModel: MainViewModel = viewModel()) {
                 NavDest.Journal -> JournalScreen(
                     records = records,
                     onOpenRecord = { detailId = it.id },
+                    onRefresh = viewModel::refresh,
                 )
 
                 NavDest.Models -> ModelManagerScreen(
                     models = uiState.models,
                     runningModelId = (serverState as? ServerState.Running)?.modelId,
+                    serverActive = serverState.isActive,
                     onSelect = { viewModel.selectModel(it.model) },
                     onDownload = { viewModel.downloadModel(it.model) },
                     onPause = { viewModel.pauseDownload(it.model) },

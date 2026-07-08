@@ -3,6 +3,7 @@ package com.example.whisperserver.native
 import android.content.Context
 import android.util.Log
 import com.example.whisperserver.WhisperApp
+import com.example.whisperserver.data.ModelRegistry
 import com.example.whisperserver.data.ServerConfig
 import com.example.whisperserver.service.LogLevel
 import com.example.whisperserver.service.ServerController
@@ -58,12 +59,49 @@ class WhisperBridge(
     // Bounded cache of recent uploads, replayed from the transcription detail
     // screen. The recorder journals each request and persists its audio here.
     private val audioStore = WhisperApp.container(context).audioStore
+    private val transcriptionStore = WhisperApp.container(context).transcriptionStore
     private val recorder = object : TranscriptionRecorder {
         override val captureAudio: Boolean = true
         override fun nextId(): Long = ServerController.nextRecordId()
-        override fun record(record: TranscriptionRecord) = ServerController.recordTranscription(record)
+        override fun record(record: TranscriptionRecord) {
+            ServerController.recordTranscription(record) // in-memory (live UI)
+            transcriptionStore.persist(record)           // durable journal (survives restarts)
+            // For non-WAV clips the length isn't in the WAV header. Decode it OFF
+            // the request path (MediaMetadataRetriever can take tens of ms), then
+            // update the in-memory record and the durable row in place.
+            if (record.audioDurationMillis <= 0 && record.audioFileName != null) {
+                scope.launch(Dispatchers.IO) {
+                    val dur = probeAudioDurationMillis(record.audioFileName)
+                    if (dur > 0) {
+                        val updated = record.copy(audioDurationMillis = dur)
+                        ServerController.updateRecord(updated)
+                        transcriptionStore.persist(updated) // REPLACE updates the row
+                    }
+                }
+            }
+        }
         override fun saveAudio(id: Long, ext: String, bytes: ByteArray): String? =
             audioStore.save(id, ext, bytes)
+    }
+
+    /**
+     * Decode a clip's duration for formats the WAV header parser can't read
+     * (mp3/m4a/ogg/flac). Any failure yields 0 (shown as "—"); never throws.
+     */
+    private fun probeAudioDurationMillis(fileName: String?): Long {
+        val file = audioStore.file(fileName) ?: return 0L
+        return try {
+            android.media.MediaMetadataRetriever().use { retriever ->
+                retriever.setDataSource(file.absolutePath)
+                retriever
+                    .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull()
+                    ?.coerceAtLeast(0L)
+                    ?: 0L
+            }
+        } catch (e: Exception) {
+            0L
+        }
     }
 
     @Volatile
@@ -154,8 +192,9 @@ class WhisperBridge(
         crashTimestamps.clear()
         ServerController.setState(ServerState.Starting)
         ServerController.onServerStarted()
-        // Records reset on (re)start; drop stale cached audio to match.
-        audioStore.clear()
+        // Audio clips are NOT cleared on (re)start anymore: the journal is durable,
+        // so its clips must survive restarts. The AudioStore's own size/count caps
+        // bound disk use, and pruning a record deletes its clip.
 
         // Start the native server (bound to localhost). launchProcess reports its
         // own fatal error and tears down on failure.
@@ -258,7 +297,17 @@ class WhisperBridge(
         )
         val language = if (c.language.isBlank()) "auto" else c.language
         args += listOf("--language", language)
-        if (c.translate) args += "--translate"
+        // Translate is a native whisper task, but only multilingual models support
+        // it; English-only (.en) models can't. Never pass --translate for them,
+        // even if the flag is still stored on (e.g. left over from a prior model).
+        val multilingual = ModelRegistry.byId(c.selectedModelId)?.multilingual ?: true
+        when {
+            c.translate && multilingual -> args += "--translate"
+            c.translate && !multilingual -> ServerController.appendLog(
+                LogLevel.WARN,
+                "Translate is enabled but '${c.selectedModelId}' is English-only; ignoring --translate.",
+            )
+        }
         if (c.convertAudio) {
             // whisper-server's --convert execs an executable named `ffmpeg` on
             // PATH. Only pass it when we've actually exposed one (see

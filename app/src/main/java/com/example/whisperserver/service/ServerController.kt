@@ -42,6 +42,8 @@ data class ServerStats(
     /** Success rate in 0..100, or null when nothing has been served yet. */
     val successRatePercent: Int?
         get() = if (requestsServed <= 0) null else ((successCount.toDouble() / requestsServed) * 100).toInt()
+    // NOTE: average processing rate is derived from the (durable, all-time) record
+    // history on the Dashboard, not tracked here — see aggregateProcessingRate().
 }
 
 /**
@@ -69,12 +71,38 @@ object ServerController {
 
     private val recordIds = AtomicLong(0)
 
+    // Set once the durable journal has been loaded into memory at process start.
+    private var recordsInitialized = false
+
     // Rolling accumulator for average processing time.
     private var processingSamples = 0L
     private var processingTotalMillis = 0L
 
     /** A unique, increasing id for the next transcription record / audio clip. */
     fun nextRecordId(): Long = recordIds.incrementAndGet()
+
+    /**
+     * Seed the in-memory history from the durable journal at process start.
+     * Idempotent (first call wins). Merges any records already captured this
+     * session, and advances the id counter past the highest persisted id so new
+     * records and their audio clip names never collide with stored ones.
+     */
+    @Synchronized
+    fun initializeRecords(loaded: List<TranscriptionRecord>) {
+        if (recordsInitialized) return
+        recordsInitialized = true
+        val seen = HashSet<Long>()
+        val merged = ArrayList<TranscriptionRecord>(_records.value.size + loaded.size)
+        for (r in _records.value) if (seen.add(r.id)) merged.add(r)
+        for (r in loaded) if (seen.add(r.id)) merged.add(r)
+        merged.sortByDescending { it.id }
+        _records.value = if (merged.size > MAX_RECORDS) ArrayList(merged.subList(0, MAX_RECORDS)) else merged
+        val maxId = merged.maxOfOrNull { it.id } ?: 0L
+        do {
+            val cur = recordIds.get()
+            if (cur >= maxId) break
+        } while (!recordIds.compareAndSet(cur, maxId))
+    }
 
     fun setState(state: ServerState) {
         _state.value = state
@@ -99,10 +127,12 @@ object ServerController {
 
     @Synchronized
     fun onServerStarted() {
+        // Dashboard KPI stats are per-session and reset on each (re)start; the
+        // record history is durable now (persisted to the journal DB) and is
+        // deliberately NOT cleared here so it survives restarts.
         processingSamples = 0
         processingTotalMillis = 0
         _stats.value = ServerStats(startedAtMillis = System.currentTimeMillis())
-        _records.value = emptyList()
     }
 
     fun onServerStopped() {
@@ -140,6 +170,11 @@ object ServerController {
                 avgProcessingMillis = if (record.success && record.processingMillis > 0) avg else current.avgProcessingMillis,
             )
         }
+    }
+
+    /** Replace a record in-place by id (e.g. once its audio duration is resolved). */
+    fun updateRecord(record: TranscriptionRecord) {
+        _records.update { current -> current.map { if (it.id == record.id) record else it } }
     }
 
     /** Drop a single record from the history (aggregate stats are left intact). */

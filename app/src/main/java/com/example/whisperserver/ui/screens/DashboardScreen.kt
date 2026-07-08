@@ -24,11 +24,19 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +52,7 @@ import com.example.whisperserver.ui.components.CompactCard
 import com.example.whisperserver.ui.components.RowDivider
 import com.example.whisperserver.ui.components.ScreenHeader
 import com.example.whisperserver.ui.theme.appColors
+import kotlinx.coroutines.delay
 
 @Composable
 fun DashboardScreen(
@@ -59,6 +68,17 @@ fun DashboardScreen(
     onOpenJournal: () -> Unit,
 ) {
     val c = appColors
+    // Counters/records/stats update reactively via their StateFlows; this coarse
+    // clock only advances the time-windowed chart ("now" boundary) and acts as a
+    // liveness fallback so nothing looks stale. The hourly buckets shift at most
+    // once per hour, so a 10s tick is plenty (and cheap on battery).
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(10_000)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
     Column(Modifier.fillMaxSize().background(c.screen)) {
         ScreenHeader("Dashboard") {
             ServerStatusChip(serverState, config, onStart, onStop)
@@ -106,7 +126,8 @@ fun DashboardScreen(
             val chartModelId = (serverState as? ServerState.Running)?.modelId
                 ?: records.firstOrNull()?.modelId
                 ?: config.selectedModelId
-            RequestsChartCard(records, chartModelId)
+            RateCard(records)
+            RequestsChartCard(records, chartModelId, nowMillis)
             RecentCard(records, onOpenRecord, onOpenJournal)
             Spacer(Modifier.height(4.dp))
         }
@@ -235,7 +256,83 @@ private fun ErrorBanner(message: String) {
 }
 
 @Composable
-private fun RequestsChartCard(records: List<TranscriptionRecord>, modelId: String) {
+private fun RateCard(records: List<TranscriptionRecord>) {
+    val c = appColors
+    val rates = remember(records) { recentRates(records, MAX_RATE_BARS) }
+    // Badge, bars and the average line all derive from the same (durable, all-time)
+    // record history, so the card is internally consistent across restarts.
+    val avgRate = remember(records) { aggregateProcessingRate(records) }
+    val badgeColor = rateColor(avgRate, c.textPrimary, c.success, c.warn, c.error)
+    CompactCard(Modifier.fillMaxWidth()) {
+        Column {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Processing rate",
+                        color = c.textPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "×realtime · lower is better",
+                        color = c.textSecondary,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 1.dp),
+                    )
+                }
+                Text(
+                    formatRate(avgRate, decimals = 1),
+                    color = badgeColor,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            if (rates.isEmpty()) {
+                Text(
+                    "No timed requests yet.",
+                    color = c.textMuted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(vertical = 10.dp),
+                )
+            } else {
+                RateBars(rates, avgRate, Modifier.fillMaxWidth().height(56.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RateBars(rates: List<Double>, avgRate: Double?, modifier: Modifier) {
+    val c = appColors
+    val bars = rates.map { it to rateColor(it, c.success, c.success, c.warn, c.error) }
+    val maxRate = (rates.maxOrNull() ?: 1.0).coerceAtLeast(0.1)
+    val avgLineColor = c.textMuted
+    Canvas(modifier) {
+        val n = bars.size
+        if (n == 0) return@Canvas
+        val gap = 3.dp.toPx()
+        val barW = ((size.width - gap * (n - 1)) / n).coerceAtLeast(1f)
+        bars.forEachIndexed { i, (rate, color) ->
+            val h = (rate / maxRate * size.height).toFloat().coerceIn(2f, size.height)
+            val x = i * (barW + gap)
+            drawRect(color = color, topLeft = Offset(x, size.height - h), size = Size(barW, h))
+        }
+        if (avgRate != null && avgRate > 0) {
+            val y = (size.height - (avgRate / maxRate * size.height)).toFloat().coerceIn(0f, size.height)
+            drawLine(
+                color = avgLineColor,
+                start = Offset(0f, y),
+                end = Offset(size.width, y),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RequestsChartCard(records: List<TranscriptionRecord>, modelId: String, nowMillis: Long) {
     val c = appColors
     CompactCard(Modifier.fillMaxWidth()) {
         Column {
@@ -254,7 +351,7 @@ private fun RequestsChartCard(records: List<TranscriptionRecord>, modelId: Strin
                 )
             }
             Spacer(Modifier.height(8.dp))
-            val buckets = hourlyBuckets(records)
+            val buckets = hourlyBuckets(records, nowMillis)
             Canvas(Modifier.fillMaxWidth().height(66.dp)) {
                 val max = (buckets.maxOrNull() ?: 0).coerceAtLeast(1).toFloat()
                 val n = buckets.size
@@ -396,8 +493,7 @@ private fun PillButton(text: String, filled: Boolean, onClick: () -> Unit) {
 }
 
 /** Count of requests in each of the last 24 hourly buckets (oldest first). */
-private fun hourlyBuckets(records: List<TranscriptionRecord>): IntArray {
-    val now = System.currentTimeMillis()
+private fun hourlyBuckets(records: List<TranscriptionRecord>, now: Long): IntArray {
     val hourMs = 3_600_000L
     val buckets = IntArray(24)
     records.forEach { r ->
@@ -409,6 +505,44 @@ private fun hourlyBuckets(records: List<TranscriptionRecord>): IntArray {
     }
     return buckets
 }
+
+/** Max bars shown in the processing-rate chart. */
+private const val MAX_RATE_BARS = 24
+
+/**
+ * Aggregate processing rate over all records with a known audio length: total
+ * compute time / total audio time (seconds of compute per second of audio). Null
+ * when no such record exists. Weighting by duration keeps long clips from being
+ * out-weighed by short ones (vs. a plain mean of per-request ratios).
+ */
+fun aggregateProcessingRate(records: List<TranscriptionRecord>): Double? {
+    var processing = 0L
+    var audio = 0L
+    for (r in records) {
+        if (r.success && r.processingMillis > 0 && r.audioDurationMillis > 0) {
+            processing += r.processingMillis
+            audio += r.audioDurationMillis
+        }
+    }
+    return if (audio > 0) processing.toDouble() / audio else null
+}
+
+/** Per-request processing rates for the most recent [n] timed successes, oldest→newest. */
+private fun recentRates(records: List<TranscriptionRecord>, n: Int): List<Double> =
+    records.asSequence()
+        .mapNotNull { it.processingRate }
+        .take(n)
+        .toList()
+        .reversed()
+
+/** Threshold color for a rate: green <2×, amber 2–4×, red >4× ([nullColor] when unknown). */
+private fun rateColor(rate: Double?, nullColor: Color, low: Color, mid: Color, high: Color): Color =
+    when {
+        rate == null -> nullColor
+        rate < 2.0 -> low
+        rate <= 4.0 -> mid
+        else -> high
+    }
 
 /** "100.98.12.4" -> ".12.4" (last two octets); other forms passed through short. */
 private fun shortIp(address: String): String {

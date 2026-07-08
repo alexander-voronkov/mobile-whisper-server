@@ -67,7 +67,10 @@ class AudioStore(context: Context) {
     companion object {
         private const val TAG = "AudioStore"
         private const val DIR_NAME = "transcriptions"
-        private const val MAX_FILES = 40
+        // Match the durable journal's row cap so restored records keep their clips
+        // where disk allows; the total-bytes cap below is the real bound (clips are
+        // up to 8 MB each, so 200 MB is reached well before 500 files for big clips).
+        private const val MAX_FILES = 500 // TranscriptionStore.MAX_PERSISTED
         private const val MAX_TOTAL_BYTES = 200L * 1024 * 1024 // 200 MB
     }
 }

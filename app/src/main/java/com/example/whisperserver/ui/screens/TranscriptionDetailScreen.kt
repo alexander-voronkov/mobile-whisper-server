@@ -25,11 +25,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,6 +52,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.whisperserver.data.Languages
 import com.example.whisperserver.data.ModelRegistry
 import com.example.whisperserver.service.TranscriptionRecord
 import com.example.whisperserver.ui.components.CompactCard
@@ -291,9 +294,17 @@ private fun MetricsCard(record: TranscriptionRecord) {
             RowDivider()
             MetricRow(Icons.Filled.GraphicEq, "Audio length", if (record.audioDurationMillis > 0) formatDuration(record.audioDurationMillis) else "—")
             RowDivider()
+            MetricRow(
+                Icons.Filled.Language,
+                "Language",
+                if (record.detectedLanguage.isNotBlank()) Languages.labelFor(record.detectedLanguage) else "—",
+            )
+            RowDivider()
             MetricRow(Icons.Filled.HourglassEmpty, "Queue wait", formatDuration(record.queueWaitMillis))
             RowDivider()
             MetricRow(Icons.Filled.Schedule, "Processing time", formatDuration(record.processingMillis))
+            RowDivider()
+            MetricRow(Icons.Filled.Speed, "Processing rate", formatRate(record.processingRate))
             RowDivider()
             MetricRow(Icons.Filled.Notes, "Text length", "${record.textLength} chars")
         }

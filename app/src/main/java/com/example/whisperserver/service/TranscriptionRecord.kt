@@ -31,7 +31,26 @@ data class TranscriptionRecord(
     val errorMessage: String? = null,
     /** File name of the retained audio clip in the audio cache, or null if none. */
     val audioFileName: String? = null,
+    /**
+     * Language code detected by whisper (e.g. "en", "ru"), or blank when unknown.
+     * Only populated when the response carries a `language` field — i.e. the
+     * client requested `response_format=verbose_json`; the default `json` format
+     * returns only the text, so this stays blank.
+     */
+    val detectedLanguage: String = "",
 ) {
+    /**
+     * Processing cost relative to the audio length: seconds of compute per second
+     * of audio (e.g. 39.6 s to transcribe a 10 s clip -> ~3.96). Null when the
+     * audio length is unknown or the request failed. Lower is better.
+     */
+    val processingRate: Double?
+        get() = if (success && audioDurationMillis > 0 && processingMillis > 0) {
+            processingMillis.toDouble() / audioDurationMillis
+        } else {
+            null
+        }
+
     val textLength: Int get() = text.length
 
     /** Short one-line summary for list rows: transcript preview or the error. */
