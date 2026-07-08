@@ -15,7 +15,7 @@ plugins {
 //   ./gradlew buildWhisperNative -PwhisperCommit=<sha>
 // ---------------------------------------------------------------------------
 val whisperCommit: String = (project.findProperty("whisperCommit") as String?)
-    ?: "v1.7.4"
+    ?: "v1.9.1"
 val whisperRepo: String = (project.findProperty("whisperRepo") as String?)
     ?: "https://github.com/ggerganov/whisper.cpp.git"
 

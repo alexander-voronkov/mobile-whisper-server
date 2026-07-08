@@ -17,7 +17,7 @@
 #
 set -euo pipefail
 
-WHISPER_COMMIT="${WHISPER_COMMIT:-v1.7.4}"
+WHISPER_COMMIT="${WHISPER_COMMIT:-v1.9.1}"
 WHISPER_REPO="${WHISPER_REPO:-https://github.com/ggerganov/whisper.cpp.git}"
 ANDROID_API="${ANDROID_API:-30}"
 ABIS="${ABIS:-arm64-v8a armeabi-v7a}"
@@ -69,6 +69,20 @@ if [[ ! -d "$SRC_DIR/.git" ]]; then
 fi
 git -C "$SRC_DIR" fetch --tags --force origin
 git -C "$SRC_DIR" checkout --force "$WHISPER_COMMIT"
+
+# 1b. Harden whisper_lang_str[_full] to return "" instead of nullptr for an
+# unknown language id. The server example passes the result straight into
+# nlohmann-json when building verbose_json's "language" field; a NULL makes json
+# call strlen(NULL) -> SIGSEGV. Auto-detect can occasionally yield an
+# out-of-range id, which crashed whisper-server (still unguarded as of v1.9.1).
+# Non-fatal: if the upstream layout changes and the anchor is gone, warn and
+# continue rather than fail the build.
+if grep -q "unknown language id" "$SRC_DIR/src/whisper.cpp"; then
+    sed -i '/unknown language id/{n;s/return nullptr;/return "";/}' "$SRC_DIR/src/whisper.cpp"
+    echo "==> Patched whisper_lang_str[_full] to be NULL-safe"
+else
+    echo "WARN: 'unknown language id' anchor not found; skipped NULL-safety patch" >&2
+fi
 
 # 2. Build for each ABI.
 for ABI in $ABIS; do
