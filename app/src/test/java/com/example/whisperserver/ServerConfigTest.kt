@@ -14,7 +14,7 @@ class ServerConfigTest {
         assertEquals("0.0.0.0", config.host)
         assertEquals(8080, config.port)
         assertEquals("auto", config.language)
-        assertEquals(2, config.threads)
+        assertEquals(4, config.threads)
         assertFalse(config.translate)
         // Convert is off by default: ffmpeg is not bundled, and --convert would
         // make whisper-server exit at startup.

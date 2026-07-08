@@ -4,6 +4,7 @@ import com.example.whisperserver.service.LogLevel
 import com.example.whisperserver.service.TranscriptionRecord
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -64,6 +65,16 @@ class LocalProxyServer(
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES) // transcription of long audio can be slow
         .callTimeout(0, TimeUnit.MILLISECONDS)
+        // The request body streams once from the live client socket and can't be
+        // replayed. whisper.cpp's cpp-httplib server keeps a connection alive only
+        // briefly, then closes it. If OkHttp pooled such a connection and later
+        // retried a request on it, it would re-invoke the body's writeTo on the
+        // already-consumed stream and block reading the client socket until
+        // SOCKET_TIMEOUT_MS — surfacing as an intermittent ~30s 502. Upstream is
+        // localhost (cheap to reconnect), so use a fresh connection per request and
+        // never auto-retry.
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.NANOSECONDS))
+        .retryOnConnectionFailure(false)
         .build()
 
     val isRunning: Boolean get() = running
@@ -402,6 +413,10 @@ class LocalProxyServer(
         object : RequestBody() {
             override fun contentType() = contentTypeHeader?.toMediaTypeOrNull()
             override fun contentLength() = length
+            // The source is the live client socket, so this body can be read exactly
+            // once — OkHttp must never try to re-send it on a retry (see the client's
+            // connection config above).
+            override fun isOneShot() = true
             override fun writeTo(sink: BufferedSink) {
                 val buffer = ByteArray(64 * 1024)
                 var remaining = length

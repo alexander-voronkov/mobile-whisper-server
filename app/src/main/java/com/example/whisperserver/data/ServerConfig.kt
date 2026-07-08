@@ -53,7 +53,7 @@ data class ServerConfig(
     // at startup. Turn on only once an ffmpeg binary is packaged.
     val convertAudio: Boolean = false,
     val vad: Boolean = false,
-    // Defaults to the count of high-performance ("big") cores. See DEFAULT_THREADS.
+    // Whisper inference threads; see DEFAULT_THREADS. Tunable in Settings.
     val threads: Int = DEFAULT_THREADS,
     val autostart: Boolean = false,
     val selectedModelId: String = "base.en",
@@ -64,13 +64,13 @@ data class ServerConfig(
     companion object {
         const val DEFAULT_HOST = "0.0.0.0"
         const val DEFAULT_PORT = 8080
-        // 2, not the core count: phone SoCs are big.LITTLE (e.g. Dimensity 800U =
-        // 2×Cortex-A76 + 6×Cortex-A55). whisper.cpp/ggml splits each op into equal
-        // chunks and barrier-syncs after every one, so a thread landing on a slow
-        // A55 stalls the fast A76 threads at every barrier. Matching the big-core
-        // count (typically 2) is usually faster than using all 8 and avoids heating
-        // the little cores. Users can raise it in Settings (capped at core count).
-        const val DEFAULT_THREADS = 2
+        // 4 is a solid default across phone SoCs. An earlier attempt to default to
+        // the big-core count (2 on a big.LITTLE like the Dimensity 800U) — on the
+        // theory that ggml's per-op barrier stalls the fast A76 cores waiting on the
+        // slow A55s — measured *slower* on real hardware: the extra little-core
+        // throughput outweighs the barrier penalty here, so more threads win. Users
+        // can tune it in Settings (capped at the device core count).
+        const val DEFAULT_THREADS = 4
         const val MIN_PORT = 1024
         const val MAX_PORT = 65535
 
