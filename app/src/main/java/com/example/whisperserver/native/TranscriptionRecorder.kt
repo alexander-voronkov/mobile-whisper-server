@@ -21,4 +21,12 @@ interface TranscriptionRecorder {
 
     /** Persist audio [bytes] for [id] with extension [ext]; return the stored name or null. */
     fun saveAudio(id: Long, ext: String, bytes: ByteArray): String?
+
+    /**
+     * Best-effort audio length in ms for the retained clip named [fileName], for
+     * formats the pure WAV parser can't read (mp3/m4a/ogg/flac). Backed by an
+     * Android media decoder in the app layer; the default returns 0 so pure/JVM
+     * implementations (and tests) stay Android-free. Returns 0 when unknown.
+     */
+    fun probeDurationMillis(fileName: String?): Long = 0L
 }

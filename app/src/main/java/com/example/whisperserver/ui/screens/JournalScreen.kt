@@ -24,13 +24,16 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -47,6 +50,7 @@ import com.example.whisperserver.ui.components.RowDivider
 import com.example.whisperserver.ui.components.ScreenHeader
 import com.example.whisperserver.ui.theme.appColors
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private const val PAGE_SIZE = 20
 
@@ -59,10 +63,12 @@ enum class DateRange(val label: String, val windowMillis: Long) {
 
 enum class StatusFilter(val label: String) { All("All"), Success("Success"), Failed("Failed") }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JournalScreen(
     records: List<TranscriptionRecord>,
     onOpenRecord: (TranscriptionRecord) -> Unit,
+    onRefresh: () -> Unit = {},
 ) {
     val c = appColors
     var dateRange by remember { mutableStateOf(DateRange.Last7) }
@@ -96,6 +102,23 @@ fun JournalScreen(
                 visibleCount += PAGE_SIZE
             }
         }
+    }
+
+    val scope = rememberCoroutineScope()
+    var isRefreshing by remember { mutableStateOf(false) }
+    // Records are held live in memory, so a pull-to-refresh has nothing to fetch;
+    // it re-runs the host/model recompute, resets the reveal window, scrolls to the
+    // top, and shows the spinner briefly for tactile feedback.
+    val doRefresh: () -> Unit = {
+        scope.launch {
+            isRefreshing = true
+            onRefresh()
+            visibleCount = PAGE_SIZE
+            runCatching { listState.scrollToItem(0) }
+            delay(500)
+            isRefreshing = false
+        }
+        Unit
     }
 
     Column(Modifier.fillMaxSize().background(c.screen)) {
@@ -152,6 +175,11 @@ fun JournalScreen(
             return@Column
         }
 
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = doRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -199,6 +227,7 @@ fun JournalScreen(
                     }
                 }
             }
+        }
         }
     }
 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.whisperserver.data.Languages
+import com.example.whisperserver.data.ModelRegistry
 import com.example.whisperserver.data.ServerConfig
 import com.example.whisperserver.service.ServerState
 import com.example.whisperserver.ui.MainUiState
@@ -64,6 +65,15 @@ fun SettingsScreen(
     val c = appColors
     val config = state.config
 
+    // While the server is active (Running/Starting/Restarting) the settings that
+    // shape the running server are locked — they only take effect on a (re)start,
+    // so editing them live would be misleading. HuggingFace token and autostart
+    // don't touch the running server, so they stay editable.
+    val serverActive = serverState.isActive
+    // Translate is a native whisper task, but only multilingual models support it;
+    // the English-only ".en" models can't translate.
+    val translateSupported = ModelRegistry.byId(config.selectedModelId)?.multilingual ?: true
+
     var editPort by remember { mutableStateOf(false) }
     var editThreads by remember { mutableStateOf(false) }
     var editApiKey by remember { mutableStateOf(false) }
@@ -75,16 +85,20 @@ fun SettingsScreen(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
+            if (serverActive) {
+                Text(
+                    "Server is running — stop it to change server settings.",
+                    color = c.textSecondary,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 2.dp),
+                )
+            }
+
             GroupLabel("Network")
             GroupCard {
-                HostRow(config, state, onHost)
+                HostRow(config, state, onHost, enabled = !serverActive)
                 RowDivider()
-                ValueRow("Port", config.port.toString(), mono = true) { editPort = true }
-                val running = serverState as? ServerState.Running
-                if (running != null && (running.host != config.host || running.port != config.port)) {
-                    RowDivider()
-                    PendingHint("Serving ${running.host}:${running.port} — restart to apply changes")
-                }
+                ValueRow("Port", config.port.toString(), mono = true, enabled = !serverActive) { editPort = true }
             }
 
             GroupLabel("Security")
@@ -96,7 +110,7 @@ fun SettingsScreen(
                     } else {
                         "No key set — anyone who can reach this host may call the API"
                     },
-                    isSet = state.hasApiKey, isNew = false,
+                    isSet = state.hasApiKey, isNew = false, enabled = !serverActive,
                 ) { editApiKey = true }
                 RowDivider()
                 SecretRow(
@@ -107,9 +121,15 @@ fun SettingsScreen(
 
             GroupLabel("Transcription")
             GroupCard {
-                LanguageRow(config, onLanguage)
+                LanguageRow(config, onLanguage, enabled = !serverActive)
                 RowDivider()
-                ToggleRow("Translate to English", null, config.translate, onTranslate)
+                ToggleRow(
+                    "Translate to English",
+                    if (!translateSupported) "Only works with a multilingual model — the selected model is English-only" else null,
+                    config.translate,
+                    onTranslate,
+                    enabled = !serverActive && translateSupported,
+                )
                 RowDivider()
                 ToggleRow(
                     "Convert audio (ffmpeg)",
@@ -120,10 +140,10 @@ fun SettingsScreen(
                     },
                     config.convertAudio,
                     onConvert,
-                    enabled = state.ffmpegAvailable,
+                    enabled = state.ffmpegAvailable && !serverActive,
                 )
                 RowDivider()
-                ValueRow("Threads", config.threads.toString()) { editThreads = true }
+                ValueRow("Threads", config.threads.toString(), enabled = !serverActive) { editThreads = true }
             }
 
             GroupLabel("Startup")
@@ -174,24 +194,15 @@ private fun GroupCard(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun PendingHint(text: String) {
-    Text(
-        text,
-        color = appColors.textSecondary,
-        fontSize = 10.sp,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-    )
-}
-
-@Composable
-private fun ValueRow(title: String, value: String, subtitle: String? = null, mono: Boolean = false, onClick: (() -> Unit)? = null) {
+private fun ValueRow(title: String, value: String, subtitle: String? = null, mono: Boolean = false, enabled: Boolean = true, onClick: (() -> Unit)? = null) {
     val c = appColors
+    val clickable = enabled && onClick != null
     Row(
-        Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(vertical = 11.dp),
+        Modifier.fillMaxWidth().then(if (clickable) Modifier.clickable { onClick?.invoke() } else Modifier).padding(vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = c.textPrimary, fontSize = 13.sp)
+            Text(title, color = if (enabled) c.textPrimary else c.textMuted, fontSize = 13.sp)
             if (subtitle != null) Text(subtitle, color = c.textSecondary, fontSize = 10.sp, modifier = Modifier.padding(top = 1.dp))
         }
         Text(
@@ -220,15 +231,15 @@ private fun ToggleRow(title: String, subtitle: String?, checked: Boolean, onChan
 }
 
 @Composable
-private fun SecretRow(title: String, subtitle: String, isSet: Boolean, isNew: Boolean, onClick: () -> Unit) {
+private fun SecretRow(title: String, subtitle: String, isSet: Boolean, isNew: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
     val c = appColors
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(title, color = c.textPrimary, fontSize = 13.sp)
+                Text(title, color = if (enabled) c.textPrimary else c.textMuted, fontSize = 13.sp)
                 if (isNew) {
                     Text(
                         "NEW",
@@ -242,25 +253,25 @@ private fun SecretRow(title: String, subtitle: String, isSet: Boolean, isNew: Bo
         if (isSet) {
             Text("•••••• set", color = c.textSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
         } else {
-            Text("Add", color = c.primary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("Add", color = if (enabled) c.primary else c.textMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
 
 @Composable
-private fun HostRow(config: ServerConfig, state: MainUiState, onHost: (String) -> Unit) {
+private fun HostRow(config: ServerConfig, state: MainUiState, onHost: (String) -> Unit, enabled: Boolean = true) {
     val c = appColors
     var expanded by remember { mutableStateOf(false) }
     val label = state.hostOptions.firstOrNull { it.address == config.host }?.label ?: config.host
     Box {
         Row(
-            Modifier.fillMaxWidth().clickable { expanded = true }.padding(vertical = 11.dp),
+            Modifier.fillMaxWidth().clickable(enabled = enabled) { expanded = true }.padding(vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Host", color = c.textPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text("Host", color = if (enabled) c.textPrimary else c.textMuted, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Text(label, color = c.textSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
             state.hostOptions.forEach { opt ->
                 DropdownMenuItem(text = { Text(opt.label) }, onClick = { onHost(opt.address); expanded = false })
             }
@@ -269,18 +280,18 @@ private fun HostRow(config: ServerConfig, state: MainUiState, onHost: (String) -
 }
 
 @Composable
-private fun LanguageRow(config: ServerConfig, onLanguage: (String) -> Unit) {
+private fun LanguageRow(config: ServerConfig, onLanguage: (String) -> Unit, enabled: Boolean = true) {
     val c = appColors
     var expanded by remember { mutableStateOf(false) }
     Box {
         Row(
-            Modifier.fillMaxWidth().clickable { expanded = true }.padding(vertical = 11.dp),
+            Modifier.fillMaxWidth().clickable(enabled = enabled) { expanded = true }.padding(vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Language", color = c.textPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text("Language", color = if (enabled) c.textPrimary else c.textMuted, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Text(Languages.labelFor(config.language), color = c.textSecondary, fontSize = 12.sp)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
             Languages.options.forEach { opt ->
                 DropdownMenuItem(text = { Text(opt.label) }, onClick = { onLanguage(opt.code); expanded = false })
             }

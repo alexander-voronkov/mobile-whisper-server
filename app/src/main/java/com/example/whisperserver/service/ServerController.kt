@@ -35,6 +35,10 @@ data class ServerStats(
     val avgProcessingMillis: Long = 0,
     val memoryUsageBytes: Long = 0,
     val startedAtMillis: Long = 0,
+    /** Total audio duration (ms) across successful, duration-known requests. */
+    val ratedAudioMillis: Long = 0,
+    /** Total processing time (ms) for the same requests folded into [ratedAudioMillis]. */
+    val ratedProcessingMillis: Long = 0,
 ) {
     val uptimeMillis: Long
         get() = if (startedAtMillis == 0L) 0 else System.currentTimeMillis() - startedAtMillis
@@ -42,6 +46,14 @@ data class ServerStats(
     /** Success rate in 0..100, or null when nothing has been served yet. */
     val successRatePercent: Int?
         get() = if (requestsServed <= 0) null else ((successCount.toDouble() / requestsServed) * 100).toInt()
+
+    /**
+     * Average processing cost per second of audio (seconds of compute / second of
+     * audio) across all requests with a known audio length. Null until at least
+     * one such request has completed. Lower is better.
+     */
+    val avgRate: Double?
+        get() = if (ratedAudioMillis > 0) ratedProcessingMillis.toDouble() / ratedAudioMillis else null
 }
 
 /**
@@ -73,6 +85,10 @@ object ServerController {
     private var processingSamples = 0L
     private var processingTotalMillis = 0L
 
+    // Rolling accumulators for the average processing rate (compute / audio).
+    private var ratedAudioTotalMillis = 0L
+    private var ratedProcessingTotalMillis = 0L
+
     /** A unique, increasing id for the next transcription record / audio clip. */
     fun nextRecordId(): Long = recordIds.incrementAndGet()
 
@@ -101,6 +117,8 @@ object ServerController {
     fun onServerStarted() {
         processingSamples = 0
         processingTotalMillis = 0
+        ratedAudioTotalMillis = 0
+        ratedProcessingTotalMillis = 0
         _stats.value = ServerStats(startedAtMillis = System.currentTimeMillis())
         _records.value = emptyList()
     }
@@ -130,7 +148,15 @@ object ServerController {
             processingSamples += 1
             processingTotalMillis += record.processingMillis
         }
+        // Fold the rate accumulators only for successful requests whose audio
+        // length is known — same exactly-once discipline as the average above.
+        if (record.success && record.processingMillis > 0 && record.audioDurationMillis > 0) {
+            ratedAudioTotalMillis += record.audioDurationMillis
+            ratedProcessingTotalMillis += record.processingMillis
+        }
         val avg = if (processingSamples > 0) processingTotalMillis / processingSamples else 0L
+        val ratedAudio = ratedAudioTotalMillis
+        val ratedProcessing = ratedProcessingTotalMillis
         _stats.update { current ->
             current.copy(
                 requestsServed = current.requestsServed + 1,
@@ -138,6 +164,8 @@ object ServerController {
                 failureCount = current.failureCount + if (record.success) 0 else 1,
                 lastRequestAtMillis = record.timestampMillis,
                 avgProcessingMillis = if (record.success && record.processingMillis > 0) avg else current.avgProcessingMillis,
+                ratedAudioMillis = ratedAudio,
+                ratedProcessingMillis = ratedProcessing,
             )
         }
     }

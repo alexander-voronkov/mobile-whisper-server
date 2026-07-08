@@ -64,6 +64,27 @@ class WhisperBridge(
         override fun record(record: TranscriptionRecord) = ServerController.recordTranscription(record)
         override fun saveAudio(id: Long, ext: String, bytes: ByteArray): String? =
             audioStore.save(id, ext, bytes)
+
+        /**
+         * Decode the clip's duration for formats the WAV header parser can't read
+         * (mp3/m4a/ogg/flac). Runs on the proxy worker thread; any failure yields
+         * 0 (shown as "—"), never throws.
+         */
+        override fun probeDurationMillis(fileName: String?): Long {
+            val file = audioStore.file(fileName) ?: return 0L
+            return try {
+                android.media.MediaMetadataRetriever().use { retriever ->
+                    retriever.setDataSource(file.absolutePath)
+                    retriever
+                        .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        ?.toLongOrNull()
+                        ?.coerceAtLeast(0L)
+                        ?: 0L
+                }
+            } catch (e: Exception) {
+                0L
+            }
+        }
     }
 
     @Volatile

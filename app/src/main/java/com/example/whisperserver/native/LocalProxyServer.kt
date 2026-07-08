@@ -316,6 +316,12 @@ class LocalProxyServer(
             } else {
                 ""
             }
+            // Detected language is only present in a verbose_json response; blank otherwise.
+            val detectedLanguage = if (success && responseBody != null) {
+                extractLanguage(responseBody, responseContentType)
+            } else {
+                ""
+            }
             val error = when {
                 success -> null
                 errorOverride != null -> errorOverride
@@ -334,6 +340,12 @@ class LocalProxyServer(
                     durationMillis = MultipartAudio.durationMillis(part.bytes)
                     val ext = MultipartAudio.extensionFor(part.filename, part.contentType)
                     audioFileName = rec.saveAudio(id, ext, part.bytes)
+                    // WAV length is read from the header above; other formats
+                    // (mp3/m4a/ogg/flac) need a real decoder — probe the saved clip
+                    // through the app layer (Android MediaMetadataRetriever).
+                    if (durationMillis <= 0) {
+                        durationMillis = rec.probeDurationMillis(audioFileName)
+                    }
                 }
             }
 
@@ -352,6 +364,7 @@ class LocalProxyServer(
                     text = text,
                     errorMessage = error,
                     audioFileName = audioFileName,
+                    detectedLanguage = detectedLanguage,
                 ),
             )
         } catch (e: Exception) {
@@ -367,6 +380,18 @@ class LocalProxyServer(
         } else {
             text.trim()
         }
+    }
+
+    /**
+     * Detected language code from a whisper response. Only `verbose_json`
+     * responses carry a top-level `language` field (e.g. `"language":"en"`); the
+     * default `json`/`text` formats don't, so this returns blank for them.
+     */
+    private fun extractLanguage(body: ByteArray, contentType: String?): String {
+        val text = String(body, Charsets.UTF_8)
+        val isJson = contentType?.contains("json", true) == true || text.trimStart().startsWith("{")
+        if (!isJson) return ""
+        return jsonStringField(text, "language")?.trim().orEmpty()
     }
 
     /** Best-effort error message from an error JSON body. */

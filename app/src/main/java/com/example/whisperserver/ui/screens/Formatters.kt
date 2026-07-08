@@ -57,3 +57,12 @@ fun formatPlayerClock(millis: Long): String {
     val total = (millis / 1000).coerceAtLeast(0)
     return String.format(Locale.US, "%d:%02d", total / 60, total % 60)
 }
+
+/**
+ * Processing cost per second of audio as a "×realtime" figure, e.g. 3.96 ->
+ * "3.96×" (higher = slower = worse). Returns "—" for null / non-positive.
+ */
+fun formatRate(rate: Double?, decimals: Int = 2): String {
+    if (rate == null || rate <= 0) return "—"
+    return String.format(Locale.US, "%.${decimals}f×", rate)
+}

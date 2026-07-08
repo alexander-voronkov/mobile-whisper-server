@@ -53,6 +53,9 @@ fun ModelManagerScreen(
     // when stopped. Distinct from the selected config, which only takes effect on
     // the next (re)start.
     runningModelId: String?,
+    // Server is Running/Starting/Restarting: the active model can't be switched
+    // and the in-use model can't be deleted, but downloads stay available.
+    serverActive: Boolean,
     onSelect: (ModelUiState) -> Unit,
     onDownload: (ModelUiState) -> Unit,
     onPause: (ModelUiState) -> Unit,
@@ -77,6 +80,14 @@ fun ModelManagerScreen(
                 )
             }
         }
+        if (serverActive) {
+            Text(
+                "Server running — stop it to switch the active model. Downloads are still available.",
+                color = c.textSecondary,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+        }
         LazyColumn(
             Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
@@ -86,6 +97,7 @@ fun ModelManagerScreen(
                 ModelCard(
                     models[i],
                     isServing = runningModelId != null && runningModelId == models[i].model.id,
+                    serverActive = serverActive,
                     onSelect, onDownload, onPause, onCancel, onDelete,
                 )
             }
@@ -97,6 +109,7 @@ fun ModelManagerScreen(
 private fun ModelCard(
     row: ModelUiState,
     isServing: Boolean,
+    serverActive: Boolean,
     onSelect: (ModelUiState) -> Unit,
     onDownload: (ModelUiState) -> Unit,
     onPause: (ModelUiState) -> Unit,
@@ -136,10 +149,10 @@ private fun ModelCard(
                     )
                 }
                 Spacer(Modifier.width(8.dp))
-                TopRightControl(row, isServing, onSelect, onDownload)
+                TopRightControl(row, isServing, serverActive, onSelect, onDownload)
             }
             Spacer(Modifier.height(9.dp))
-            BottomControls(row, isServing, onDownload, onPause, onCancel, onDelete)
+            BottomControls(row, isServing, serverActive, onDownload, onPause, onCancel, onDelete)
         }
     }
 }
@@ -148,6 +161,7 @@ private fun ModelCard(
 private fun TopRightControl(
     row: ModelUiState,
     isServing: Boolean,
+    serverActive: Boolean,
     onSelect: (ModelUiState) -> Unit,
     onDownload: (ModelUiState) -> Unit,
 ) {
@@ -158,7 +172,9 @@ private fun TopRightControl(
         DownloadUiState.Idle -> {
             if (row.isDownloaded) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    MiniToggle(checked = row.isSelected, onToggle = { onSelect(row) }, enabled = !row.isSelected)
+                    // Locked while the server is active: the active model can only
+                    // change on a (re)start, so switching it now would mislead.
+                    MiniToggle(checked = row.isSelected, onToggle = { onSelect(row) }, enabled = !row.isSelected && !serverActive)
                     Text(
                         when { isServing -> "Active"; row.isSelected -> "Next start"; else -> "Off" },
                         color = when { isServing -> c.primary; row.isSelected -> c.textSecondary; else -> c.textMuted },
@@ -180,6 +196,7 @@ private fun TopRightControl(
 private fun BottomControls(
     row: ModelUiState,
     isServing: Boolean,
+    serverActive: Boolean,
     onDownload: (ModelUiState) -> Unit,
     onPause: (ModelUiState) -> Unit,
     onCancel: (ModelUiState) -> Unit,
@@ -232,12 +249,18 @@ private fun BottomControls(
                     val loaded = when { isServing -> "loaded"; row.isSelected -> "next start"; else -> "ready" }
                     StatusLine(Icons.Filled.CheckCircle, c.success, downloadedStatus(row) + " · " + loaded)
                     Spacer(Modifier.weight(1f))
-                    Row(
-                        Modifier.clickable { onDelete(row) },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Filled.Delete, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(16.dp))
-                        Text(" Delete", color = c.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    // Don't allow deleting the model the server is using (or about to
+                    // use on start) while it's active — that would pull the file out
+                    // from under a running/starting server.
+                    val protectedFromDelete = serverActive && (isServing || row.isSelected)
+                    if (!protectedFromDelete) {
+                        Row(
+                            Modifier.clickable { onDelete(row) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Filled.Delete, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(16.dp))
+                            Text(" Delete", color = c.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        }
                     }
                 } else {
                     when {
