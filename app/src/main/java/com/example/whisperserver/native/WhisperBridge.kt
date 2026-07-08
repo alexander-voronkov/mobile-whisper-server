@@ -234,6 +234,15 @@ class WhisperBridge(
         process = proc
         return try {
             proc.start()
+            // ServerProcess.start() has already spun up its wait thread; an immediate
+            // exit (e.g. SIGILL from the tuned binary on an ARMv8.0 CPU) can run
+            // handleExit()/fail() before we get here. Don't publish Running for a
+            // launch that was already superseded (generation bumped) or over a
+            // terminal error state — that would strand the UI in Running with no
+            // process or proxy behind it.
+            if (gen != generation || ServerController.state.value is ServerState.Error) {
+                return null
+            }
             ServerController.setState(
                 ServerState.Running(launchSpec.config.host, launchSpec.config.port, launchSpec.config.selectedModelId),
             )
