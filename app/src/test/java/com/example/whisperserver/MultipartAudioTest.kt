@@ -50,6 +50,16 @@ class MultipartAudioTest {
         assertNull(MultipartAudio.extractFile("not multipart".toByteArray(), "Boundary123"))
     }
 
+    @Test
+    fun extractFile_refusesOverlongBoundary() {
+        // A boundary well past RFC 2046's 70-char cap must be rejected up front
+        // so the naive scanner can't be driven into O(body x boundary) on a
+        // crafted body (worker-starvation guard).
+        val boundary = "x".repeat(5000)
+        val body = multipart(boundary, filePart("file", "clip.wav", "audio/wav", wav(seconds = 1)))
+        assertNull(MultipartAudio.extractFile(body, boundary))
+    }
+
     // ---- helpers ------------------------------------------------------------
 
     private fun textPart(name: String, value: String): ByteArray =

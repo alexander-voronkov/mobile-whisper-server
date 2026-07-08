@@ -100,7 +100,13 @@ fun DashboardScreen(
                 )
             }
 
-            RequestsChartCard(records, config.selectedModelId)
+            // Label the chart with the model that actually served the traffic:
+            // the running model while active (a pending selection isn't serving
+            // until restart), else the most recent record's model.
+            val chartModelId = (serverState as? ServerState.Running)?.modelId
+                ?: records.firstOrNull()?.modelId
+                ?: config.selectedModelId
+            RequestsChartCard(records, chartModelId)
             RecentCard(records, onOpenRecord, onOpenJournal)
             Spacer(Modifier.height(4.dp))
         }

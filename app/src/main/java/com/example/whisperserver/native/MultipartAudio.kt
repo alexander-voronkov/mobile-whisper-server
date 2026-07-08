@@ -20,6 +20,13 @@ object MultipartAudio {
 
     private val CRLF = byteArrayOf('\r'.code.toByte(), '\n'.code.toByte())
 
+    // RFC 2046 caps a multipart boundary at 70 characters. The proxy accepts
+    // header lines up to 16 KB, so without this cap a crafted Content-Type could
+    // feed a very long boundary to the naive O(body x boundary) scanner below and
+    // pin a worker on an 8 MB near-match body. Audio capture is best-effort, so
+    // refusing an over-long boundary just skips journaling the clip.
+    private const val MAX_BOUNDARY_LEN = 70
+
     /** Parse the `boundary=...` token from a `multipart/form-data` Content-Type. */
     fun boundaryOf(contentType: String?): String? {
         if (contentType == null) return null
@@ -36,7 +43,7 @@ object MultipartAudio {
      * audio), or null if the body can't be parsed as multipart with [boundary].
      */
     fun extractFile(body: ByteArray, boundary: String): FilePart? {
-        if (body.isEmpty() || boundary.isBlank()) return null
+        if (body.isEmpty() || boundary.isBlank() || boundary.length > MAX_BOUNDARY_LEN) return null
         val delimiter = "--$boundary".toByteArray(Charsets.ISO_8859_1)
 
         var searchFrom = 0

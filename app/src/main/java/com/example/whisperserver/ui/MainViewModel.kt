@@ -56,11 +56,19 @@ data class MainUiState(
     val hasApiKey: Boolean = false,
     val hasHfToken: Boolean = false,
     val tailscaleIp: String? = null,
+    /** True when this build bundles an ffmpeg binary, so "Convert audio" works. */
+    val ffmpegAvailable: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val container = WhisperApp.container(app)
+
+    // Whether an ffmpeg executable is bundled (shipped as libffmpeg.so and
+    // extracted to nativeLibraryDir). Stable for the process lifetime, so we
+    // resolve it once. Drives the "Convert audio" toggle's availability.
+    private val ffmpegAvailable: Boolean =
+        java.io.File(app.applicationInfo.nativeLibraryDir, "libffmpeg.so").exists()
 
     // Server / logs / stats / records come straight from the process-wide controller.
     val serverState = ServerController.state
@@ -132,6 +140,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             hasApiKey = secretsState.hasApiKey,
             hasHfToken = secretsState.hasHfToken,
             tailscaleIp = hosts.firstOrNull { it.isTailscale }?.address,
+            ffmpegAvailable = ffmpegAvailable,
             models = rows.map { row ->
                 ModelUiState(
                     model = row.model,

@@ -63,11 +63,17 @@ clear "binary not found" message in the logs/UI.
 `.github/workflows/release.yml` builds an installable APK on GitHub's runners
 and publishes it as a **GitHub Release** named `0.<build-number>`:
 
-- Triggers on push to `main` / the build branch, or manually via **Actions →
-  Build & Release APK → Run workflow**.
+- On **pull requests** a lightweight `pr-check` job only compiles the app and
+  runs the unit tests (no native build, no APK, no release) — a fast "does it
+  still build?" gate. The full release runs only on push to `main` (a merge) or
+  manual dispatch.
+- Triggers on push to `main`, or manually via **Actions → Build & Release APK →
+  Run workflow**.
 - Runs the unit tests, best-effort cross-compiles the native `whisper-server`
-  (arm64-v8a), builds the **debug** APK with `versionName=0.<run>`, and attaches
-  `WhisperServer-0.<run>.apk` to the release (and as a workflow artifact).
+  **and a minimal `ffmpeg`** (arm64-v8a + armeabi-v7a), builds the **debug** APK
+  with `versionName=0.<run>`, and attaches one APK **per ABI**
+  (`WhisperServer-0.<run>-arm64-v8a.apk`, `…-armeabi-v7a.apk`) to the release
+  (and as workflow artifacts). Install the one matching your phone's CPU.
 - The APK is debug-signed so it installs without setup. Because the debug
   keystore is per-runner, uninstall a previous build before updating if the
   signature differs. For stable, updatable signing, add a release keystore via
@@ -90,8 +96,20 @@ The executable is shipped as a `lib*.so` on purpose: Android 10+ only allows
 `exec()` from the read-only, execute-permitted `nativeLibraryDir`, and native
 libraries land there at install time.
 
-For `--convert` (transcoding mp3/m4a/etc. to WAV) drop an `ffmpeg` binary next to
-the server (as `libffmpeg.so`) or integrate [ffmpeg-kit](https://github.com/arthenica/ffmpeg-kit).
+### FFmpeg (audio conversion)
+
+`./gradlew buildFfmpegNative` runs [`scripts/build-ffmpeg.sh`](scripts/build-ffmpeg.sh),
+which cross-compiles a **minimal static `ffmpeg`** (pinned `-PffmpegCommit=<ref>`,
+default `n7.1.1`; LGPL config, only the demuxers/decoders needed for
+mp3/m4a/ogg/flac → 16 kHz WAV) and packages it as
+`app/src/main/jniLibs/<abi>/libffmpeg.so`. The release workflow builds it
+automatically (best-effort).
+
+whisper-server's `--convert` execs a program named `ffmpeg` on `PATH`, so the
+app symlinks `libffmpeg.so` → `ffmpeg` and prepends its dir to `PATH` at launch.
+When `libffmpeg.so` is present the *Convert audio* setting is enabled and
+mp3/m4a/ogg/flac uploads are transcoded to 16 kHz WAV; when absent the setting is
+disabled and uploads must already be 16 kHz WAV.
 
 ## Using the API
 

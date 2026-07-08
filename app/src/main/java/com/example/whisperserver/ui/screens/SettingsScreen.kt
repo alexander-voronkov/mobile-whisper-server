@@ -90,7 +90,12 @@ fun SettingsScreen(
             GroupLabel("Security")
             GroupCard {
                 SecretRow(
-                    "API key", "Bearer token required on requests",
+                    "API key",
+                    if (state.hasApiKey) {
+                        "Bearer token required on requests"
+                    } else {
+                        "No key set — anyone who can reach this host may call the API"
+                    },
                     isSet = state.hasApiKey, isNew = false,
                 ) { editApiKey = true }
                 RowDivider()
@@ -108,9 +113,14 @@ fun SettingsScreen(
                 RowDivider()
                 ToggleRow(
                     "Convert audio (ffmpeg)",
-                    "Needs a build with ffmpeg bundled; otherwise uploads must be 16 kHz WAV",
+                    if (state.ffmpegAvailable) {
+                        "Transcode mp3/m4a/ogg/flac uploads to 16 kHz WAV"
+                    } else {
+                        "Unavailable — this build has no ffmpeg; uploads must be 16 kHz WAV"
+                    },
                     config.convertAudio,
                     onConvert,
+                    enabled = state.ffmpegAvailable,
                 )
                 RowDivider()
                 ValueRow("Threads", config.threads.toString()) { editThreads = true }
@@ -194,17 +204,18 @@ private fun ValueRow(title: String, value: String, subtitle: String? = null, mon
 }
 
 @Composable
-private fun ToggleRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit, enabled: Boolean = true) {
     val c = appColors
+    val titleColor = if (enabled) c.textPrimary else c.textMuted
     Row(
-        Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().clickable(enabled = enabled) { onChange(!checked) }.padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(title, color = c.textPrimary, fontSize = 13.sp)
+            Text(title, color = titleColor, fontSize = 13.sp)
             if (subtitle != null) Text(subtitle, color = c.textSecondary, fontSize = 10.sp, modifier = Modifier.padding(top = 1.dp))
         }
-        MiniToggle(checked = checked, onToggle = { onChange(!checked) })
+        MiniToggle(checked = checked, onToggle = { onChange(!checked) }, enabled = enabled)
     }
 }
 

@@ -18,6 +18,12 @@ val whisperCommit: String = (project.findProperty("whisperCommit") as String?)
 val whisperRepo: String = (project.findProperty("whisperRepo") as String?)
     ?: "https://github.com/ggerganov/whisper.cpp.git"
 
+// FFmpeg revision built by `buildFfmpegNative` for audio-format conversion.
+val ffmpegCommit: String = (project.findProperty("ffmpegCommit") as String?)
+    ?: "n7.1.1"
+val ffmpegRepo: String = (project.findProperty("ffmpegRepo") as String?)
+    ?: "https://github.com/FFmpeg/FFmpeg.git"
+
 android {
     namespace = "com.example.whisperserver"
     compileSdk = 35
@@ -88,6 +94,20 @@ android {
         }
     }
 
+    // Emit one APK per ABI instead of a single universal APK. Each phone only
+    // needs its own ABI's native payload (whisper-server + ffmpeg are several MB
+    // each), so per-ABI APKs stay roughly half the size of a combined one.
+    // No universal APK: the release publishes both, and a device installs the
+    // matching one.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
+    }
+
     testOptions {
         unitTests {
             isReturnDefaultValues = true
@@ -149,6 +169,33 @@ tasks.register<Exec>("buildWhisperNative") {
     environment("ANDROID_NDK_HOME", ndkHome)
     environment("APP_JNILIBS_DIR", file("src/main/jniLibs").absolutePath)
     environment("APP_ASSETS_DIR", file("src/main/assets").absolutePath)
+
+    commandLine("bash", script.absolutePath)
+}
+
+// ---------------------------------------------------------------------------
+// Build pipeline task: cross-compile a minimal static FFmpeg CLI for Android
+// and drop the resulting `ffmpeg` executable (as libffmpeg.so) into jniLibs so
+// whisper-server's --convert can transcode non-WAV uploads to 16 kHz WAV.
+//
+// Requires: NDK r26+ (ANDROID_NDK_HOME / NDK_HOME), make, git.
+// See scripts/build-ffmpeg.sh for the actual build steps.
+// ---------------------------------------------------------------------------
+tasks.register<Exec>("buildFfmpegNative") {
+    group = "whisper"
+    description = "Cross-compiles a minimal static FFmpeg ($ffmpegCommit) for arm64-v8a + armeabi-v7a."
+
+    val script = rootProject.file("scripts/build-ffmpeg.sh")
+    workingDir = rootProject.projectDir
+
+    val ndkHome = System.getenv("ANDROID_NDK_HOME")
+        ?: System.getenv("NDK_HOME")
+        ?: ""
+
+    environment("FFMPEG_COMMIT", ffmpegCommit)
+    environment("FFMPEG_REPO", ffmpegRepo)
+    environment("ANDROID_NDK_HOME", ndkHome)
+    environment("APP_JNILIBS_DIR", file("src/main/jniLibs").absolutePath)
 
     commandLine("bash", script.absolutePath)
 }

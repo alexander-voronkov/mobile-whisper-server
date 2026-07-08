@@ -109,6 +109,17 @@ jobs:
           echo "Using NDK at ${ANDROID_NDK_HOME:-<none>}"
           ABIS="arm64-v8a armeabi-v7a" ./gradlew buildWhisperNative --no-daemon --stacktrace
 
+      # Best effort: cross-compile a minimal static ffmpeg so the released APK
+      # can transcode mp3/m4a/ogg/flac uploads. If it fails, the build continues
+      # and ships an APK that accepts 16 kHz WAV only (the app auto-detects the
+      # absence of libffmpeg.so and disables the "Convert audio" toggle).
+      - name: Build native ffmpeg (best effort, arm64-v8a + armeabi-v7a)
+        continue-on-error: true
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          echo "Using NDK at ${ANDROID_NDK_HOME:-<none>}"
+          ABIS="arm64-v8a armeabi-v7a" ./gradlew buildFfmpegNative --no-daemon --stacktrace
+
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
 
@@ -118,11 +129,24 @@ jobs:
           -PversionCode=${{ steps.ver.outputs.code }}
           -PversionName=${{ steps.ver.outputs.name }}
 
-      - name: Stage APK
+      # ABI splits produce one APK per ABI (app-<abi>-debug.apk). Rename each to
+      # a versioned, ABI-tagged filename for the release.
+      - name: Stage APKs
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk \
-            "dist/WhisperServer-${{ steps.ver.outputs.name }}.apk"
+          shopt -s nullglob
+          found=0
+          for apk in app/build/outputs/apk/debug/app-*-debug.apk; do
+            abi="$(basename "$apk" | sed -E 's/^app-(.*)-debug\.apk$/\1/')"
+            cp "$apk" "dist/WhisperServer-${{ steps.ver.outputs.name }}-${abi}.apk"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "ERROR: no per-ABI APKs found under app/build/outputs/apk/debug/" >&2
+            ls -la app/build/outputs/apk/debug/ || true
+            exit 1
+          fi
+          ls -la dist/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -137,9 +161,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           gh release create "v${{ steps.ver.outputs.name }}" \
-            "dist/WhisperServer-${{ steps.ver.outputs.name }}.apk" \
+            dist/*.apk \
             --title "${{ steps.ver.outputs.name }}" \
             --target "${{ github.sha }}" \
             --notes "Automated build **${{ steps.ver.outputs.name }}** (run #${{ github.run_number }}) from \`${{ github.sha }}\`.
 
-          Install the attached \`WhisperServer-${{ steps.ver.outputs.name }}.apk\` (enable *Install unknown apps* on the device). This is a debug-signed build; uninstall a previous build before updating if the signature differs."
+          Install the APK for your phone's CPU (most modern devices are **arm64-v8a**; older/32-bit ones are **armeabi-v7a**). Enable *Install unknown apps* on the device first. This is a debug-signed build; uninstall a previous build before updating if the signature differs.
+
+          These builds bundle a minimal **ffmpeg**, so the *Convert audio* setting can transcode mp3/m4a/ogg/flac uploads to 16 kHz WAV."
