@@ -340,12 +340,10 @@ class LocalProxyServer(
                     durationMillis = MultipartAudio.durationMillis(part.bytes)
                     val ext = MultipartAudio.extensionFor(part.filename, part.contentType)
                     audioFileName = rec.saveAudio(id, ext, part.bytes)
-                    // WAV length is read from the header above; other formats
-                    // (mp3/m4a/ogg/flac) need a real decoder — probe the saved clip
-                    // through the app layer (Android MediaMetadataRetriever).
-                    if (durationMillis <= 0) {
-                        durationMillis = rec.probeDurationMillis(audioFileName)
-                    }
+                    // WAV length comes from the header above; other formats
+                    // (mp3/m4a/ogg/flac) are decoded off the request path by the
+                    // recorder after journaling (see WhisperBridge), so we don't
+                    // block the client's response on a media decode here.
                 }
             }
 

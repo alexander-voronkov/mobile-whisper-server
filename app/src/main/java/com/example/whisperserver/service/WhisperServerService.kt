@@ -104,6 +104,10 @@ class WhisperServerService : Service() {
                 apiKey = container.secureStore.apiKey,
                 modelPath = modelFile.absolutePath,
             )
+            // Ensure the durable journal is loaded and the record-id counter seeded
+            // before the proxy can mint any ids, so new records/clips never collide
+            // with persisted ones (matters on a slow cold boot autostart).
+            container.journalLoad.join()
             bridge.start(spec)
         }
     }

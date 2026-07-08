@@ -68,12 +68,14 @@ fun DashboardScreen(
     onOpenJournal: () -> Unit,
 ) {
     val c = appColors
-    // Live 1-second clock so time-window charts advance and new requests/stats are
-    // reflected promptly without needing to switch tabs (fixes perceived staleness).
+    // Counters/records/stats update reactively via their StateFlows; this coarse
+    // clock only advances the time-windowed chart ("now" boundary) and acts as a
+    // liveness fallback so nothing looks stale. The hourly buckets shift at most
+    // once per hour, so a 10s tick is plenty (and cheap on battery).
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
-            delay(1_000)
+            delay(10_000)
             nowMillis = System.currentTimeMillis()
         }
     }
@@ -124,7 +126,7 @@ fun DashboardScreen(
             val chartModelId = (serverState as? ServerState.Running)?.modelId
                 ?: records.firstOrNull()?.modelId
                 ?: config.selectedModelId
-            RateCard(records, stats.avgRate)
+            RateCard(records)
             RequestsChartCard(records, chartModelId, nowMillis)
             RecentCard(records, onOpenRecord, onOpenJournal)
             Spacer(Modifier.height(4.dp))
@@ -254,9 +256,12 @@ private fun ErrorBanner(message: String) {
 }
 
 @Composable
-private fun RateCard(records: List<TranscriptionRecord>, avgRate: Double?) {
+private fun RateCard(records: List<TranscriptionRecord>) {
     val c = appColors
     val rates = remember(records) { recentRates(records, MAX_RATE_BARS) }
+    // Badge, bars and the average line all derive from the same (durable, all-time)
+    // record history, so the card is internally consistent across restarts.
+    val avgRate = remember(records) { aggregateProcessingRate(records) }
     val badgeColor = rateColor(avgRate, c.textPrimary, c.success, c.warn, c.error)
     CompactCard(Modifier.fillMaxWidth()) {
         Column {
@@ -503,6 +508,24 @@ private fun hourlyBuckets(records: List<TranscriptionRecord>, now: Long): IntArr
 
 /** Max bars shown in the processing-rate chart. */
 private const val MAX_RATE_BARS = 24
+
+/**
+ * Aggregate processing rate over all records with a known audio length: total
+ * compute time / total audio time (seconds of compute per second of audio). Null
+ * when no such record exists. Weighting by duration keeps long clips from being
+ * out-weighed by short ones (vs. a plain mean of per-request ratios).
+ */
+fun aggregateProcessingRate(records: List<TranscriptionRecord>): Double? {
+    var processing = 0L
+    var audio = 0L
+    for (r in records) {
+        if (r.success && r.processingMillis > 0 && r.audioDurationMillis > 0) {
+            processing += r.processingMillis
+            audio += r.audioDurationMillis
+        }
+    }
+    return if (audio > 0) processing.toDouble() / audio else null
+}
 
 /** Per-request processing rates for the most recent [n] timed successes, oldest→newest. */
 private fun recentRates(records: List<TranscriptionRecord>, n: Int): List<Double> =

@@ -126,8 +126,10 @@ fun SettingsScreen(
                 ToggleRow(
                     "Translate to English",
                     if (!translateSupported) "Only works with a multilingual model — the selected model is English-only" else null,
-                    config.translate,
-                    onTranslate,
+                    // Show the effective state: an English-only model never translates,
+                    // so render it off (and disabled) rather than stuck-on.
+                    checked = config.translate && translateSupported,
+                    onChange = onTranslate,
                     enabled = !serverActive && translateSupported,
                 )
                 RowDivider()

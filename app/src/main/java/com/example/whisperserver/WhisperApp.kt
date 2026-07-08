@@ -12,6 +12,7 @@ import com.example.whisperserver.data.TranscriptionStore
 import com.example.whisperserver.service.ServerController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
@@ -32,6 +33,17 @@ class AppContainer(context: Context) {
     private val database: AppDatabase = AppDatabase.build(context)
     val transcriptionStore: TranscriptionStore =
         TranscriptionStore(database.transcriptions(), audioStore, applicationScope)
+
+    /**
+     * Loads the durable journal into the in-memory history and seeds the record-id
+     * counter past the highest persisted id. Exposed so the server-start path can
+     * await it before the proxy can journal anything, guaranteeing new ids and
+     * audio clip names never collide with persisted ones.
+     */
+    val journalLoad: Job = applicationScope.launch {
+        val history = runCatching { transcriptionStore.loadRecent() }.getOrDefault(emptyList())
+        ServerController.initializeRecords(history)
+    }
 }
 
 class WhisperApp : Application() {
@@ -42,15 +54,6 @@ class WhisperApp : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
-        // Load the durable journal into the in-memory history so it's visible
-        // right after an app restart, and seed record ids so new clips/ids never
-        // collide with persisted ones. Completes well before the server can accept
-        // requests (startup waits seconds for readiness).
-        container.applicationScope.launch {
-            val history = runCatching { container.transcriptionStore.loadRecent() }
-                .getOrDefault(emptyList())
-            ServerController.initializeRecords(history)
-        }
     }
 
     companion object {
