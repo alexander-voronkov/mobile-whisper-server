@@ -148,6 +148,19 @@ class WhisperBridge(
             return
         }
 
+        // Advisory only: the released arm64 build is tuned for ARMv8.2 (fp16 +
+        // dotprod). Warn — never block — if this CPU lacks them: a baseline
+        // self-build still runs fine, and a real fault is caught in handleExit().
+        val missingCpuFeatures = NativeCpu.missingArm64Features()
+        if (missingCpuFeatures.isNotEmpty()) {
+            ServerController.appendLog(
+                LogLevel.WARN,
+                "CPU is missing ${missingCpuFeatures.joinToString()}: the tuned arm64 build " +
+                    "(armv8.2-a+fp16+dotprod) may crash with an illegal instruction. If you " +
+                    "built a baseline binary (ARM64_CPU_ARCH=), ignore this.",
+            )
+        }
+
         spec = launchSpec
         internalPort = internalPortFor(launchSpec.config.port)
         intentionalStop = false
@@ -294,6 +307,22 @@ class WhisperBridge(
             ServerController.onServerStopped()
             return
         }
+        // Illegal-instruction exit (128 + SIGILL(4)): the tuned arm64 binary hit an
+        // instruction this CPU lacks (ARMv8.2 fp16/dotprod). Restarting can't help,
+        // so report a clear, actionable error and stop instead of crash-looping.
+        if (code == SIGILL_EXIT_CODE) {
+            val missing = NativeCpu.missingArm64Features()
+                .takeIf { it.isNotEmpty() }
+                ?.let { " (missing ${it.joinToString()})" }
+                .orEmpty()
+            fail(
+                "whisper-server exited with an illegal instruction$missing. The bundled arm64 " +
+                    "build targets ARMv8.2 (fp16+dotprod), which this device's CPU does not " +
+                    "support. Use an ARMv8.2+ device, or rebuild with ARM64_CPU_ARCH= for a " +
+                    "portable baseline binary.",
+            )
+            return
+        }
         // Unexpected exit -> apply restart budget.
         val now = System.currentTimeMillis()
         crashTimestamps.addLast(now)
@@ -363,6 +392,9 @@ class WhisperBridge(
         private const val BINARY_SO = "libwhisper-server.so"
         private const val FFMPEG_SO = "libffmpeg.so"
         private const val MAX_RESTARTS = 3
+        // Process exit code for a child killed by SIGILL (illegal instruction):
+        // the JVM reports signal-terminated children as 128 + signal, SIGILL = 4.
+        private const val SIGILL_EXIT_CODE = 132
         private const val RESTART_WINDOW_MS = 5 * 60 * 1000L
         private const val RESTART_DELAY_MS = 2_000L
         // Readiness poll for the internal server: up to ~8s (40 × 200ms).

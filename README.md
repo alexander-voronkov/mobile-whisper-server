@@ -97,6 +97,13 @@ and publishes it as a **GitHub Release** named `0.<build-number>`:
 3. Packages the `whisper-server` executable as
    `app/src/main/jniLibs/<abi>/libwhisper-server.so`.
 
+> **arm64 CPU requirement:** the tuned `arm64-v8a` binary needs an ARMv8.2 CPU
+> with fp16 + dotprod (essentially any phone since ~2018). On an older 64-bit CPU
+> (all-ARMv8.0 cores such as Cortex-A53/A72/A73) it exits with an illegal
+> instruction; the app detects this (SIGILL, exit 132) and surfaces a clear error
+> instead of crash-looping. For those devices, rebuild the arm64 split with
+> `ARM64_CPU_ARCH= ./gradlew buildWhisperNative` to get a portable baseline binary.
+
 The executable is shipped as a `lib*.so` on purpose: Android 10+ only allows
 `exec()` from the read-only, execute-permitted `nativeLibraryDir`, and native
 libraries land there at install time.

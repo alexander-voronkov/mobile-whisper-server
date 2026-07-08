@@ -193,8 +193,8 @@ object ModelRegistry {
             id = "large-v3-q5_0",
             displayName = "Large v3 (Q5_0)",
             fileName = "ggml-large-v3-q5_0.bin",
-            downloadSizeBytes = 1032 * MB, // ~1.0 GB
-            requiredRamBytes = 2400 * MB,  // ~2.3 GB
+            downloadSizeBytes = 1032 * MB, // 1032 MiB — just above the real 1031 MiB file
+            requiredRamBytes = 2400 * MB,  // ~2.3 GiB
             multilingual = true,
         ),
     )
