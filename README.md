@@ -19,7 +19,8 @@ the server, manage models with RAM/storage guards, and watch live logs & stats.
   a partial wake lock, and crash auto-restart (up to 3× within 5 minutes).
 - **Model manager** with radio-button selection, per-model **memory & storage
   guard** (green / yellow / red), resumable HuggingFace downloads with progress +
-  speed, and optional SHA-256 verification.
+  speed, and optional SHA-256 verification. Ships both **full-precision (F16)** and
+  smaller/faster **quantized (Q5)** variants of every size.
 - **OpenAI-compatible API** behind a small in-app front (`LocalProxyServer`):
   `POST /v1/audio/transcriptions` (mapped via `--inference-path`), plus
   `GET /health` and `GET /v1/models` served directly, and **Bearer API-key
@@ -89,6 +90,10 @@ and publishes it as a **GitHub Release** named `0.<build-number>`:
    `v1.7.4`).
 2. Cross-compiles for `arm64-v8a` (primary) and `armeabi-v7a` (secondary) with
    the NDK, using `-DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF -DWHISPER_BUILD_SERVER=ON`.
+   The `arm64-v8a` build also passes `-DGGML_CPU_ARM_ARCH=armv8.2-a+fp16+dotprod`
+   so ggml compiles in its **fast fp16 + dotprod NEON kernels** (2–4× faster than
+   the armv8.0 baseline the NDK targets by default). This assumes an ARMv8.2+ CPU
+   (any phone SoC since ~2018); override with `ARM64_CPU_ARCH=` for older devices.
 3. Packages the `whisper-server` executable as
    `app/src/main/jniLibs/<abi>/libwhisper-server.so`.
 

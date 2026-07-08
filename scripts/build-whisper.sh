@@ -22,6 +22,23 @@ WHISPER_REPO="${WHISPER_REPO:-https://github.com/ggerganov/whisper.cpp.git}"
 ANDROID_API="${ANDROID_API:-30}"
 ABIS="${ABIS:-arm64-v8a armeabi-v7a}"
 
+# ARM CPU tuning for the 64-bit (arm64-v8a) build.
+#
+# ggml gates its fast NEON kernels behind compile-time CPU features: the fp16
+# vector-arithmetic GEMM (huge for the F16 models we ship) needs FEAT_FP16, and
+# the int8 kernels used by quantized (q5/q8) models need FEAT_DotProd. When
+# cross-compiling, ggml applies these ONLY from GGML_CPU_ARM_ARCH -> -march; with
+# it unset the NDK default for arm64-v8a is baseline armv8.0-a, which compiles the
+# fast kernels OUT and leaves inference on the slow generic path (2-4x slower).
+#
+# armv8.2-a+fp16+dotprod covers essentially every phone SoC since ~2018 (the
+# Cortex-A76 in a MediaTek Dimensity 800U, all recent Snapdragon/Exynos, etc.).
+# Trade-off: the resulting arm64 binary uses these instructions unconditionally,
+# so it will SIGILL on a true ARMv8.0-only device. Override for such devices with
+# `ARM64_CPU_ARCH=` (empty) to fall back to the portable baseline. i8mm/sve are
+# intentionally NOT enabled — the A76 lacks them and would fault.
+ARM64_CPU_ARCH="${ARM64_CPU_ARCH:-armv8.2-a+fp16+dotprod}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_JNILIBS_DIR="${APP_JNILIBS_DIR:-$ROOT_DIR/app/src/main/jniLibs}"
@@ -54,6 +71,17 @@ for ABI in $ABIS; do
     echo "==> Building $ABI"
     BUILD_DIR="$WORK_DIR/build-$ABI"
     rm -rf "$BUILD_DIR"
+
+    # Enable the fast fp16 + dotprod NEON kernels on arm64 (see ARM64_CPU_ARCH
+    # above). Left off for armeabi-v7a, which the NDK already builds with NEON.
+    # Scalar (not a bash array) so the empty case is safe under `set -u` on the
+    # bash 3.2 that ships with macOS build hosts; the flag value has no spaces.
+    ARCH_ARG=""
+    if [[ "$ABI" == "arm64-v8a" && -n "$ARM64_CPU_ARCH" ]]; then
+        echo "    (tuning arm64 for -march=$ARM64_CPU_ARCH)"
+        ARCH_ARG="-DGGML_CPU_ARM_ARCH=$ARM64_CPU_ARCH"
+    fi
+
     cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
         -DANDROID_ABI="$ABI" \
@@ -63,7 +91,8 @@ for ABI in $ABIS; do
         -DGGML_OPENMP=OFF \
         -DWHISPER_BUILD_TESTS=OFF \
         -DWHISPER_BUILD_EXAMPLES=ON \
-        -DWHISPER_BUILD_SERVER=ON
+        -DWHISPER_BUILD_SERVER=ON \
+        ${ARCH_ARG:+$ARCH_ARG}
 
     cmake --build "$BUILD_DIR" --config Release --target whisper-server -j"$(nproc)"
 

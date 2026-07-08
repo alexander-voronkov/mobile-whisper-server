@@ -45,10 +45,13 @@ object ModelRegistry {
     private const val MB = 1024L * 1024L
     private const val GB = 1024L * MB
 
-    // Sizes are for the actual unquantized F16 `ggml-*.bin` files served by
-    // HuggingFace; RAM figures follow whisper.cpp's memory-usage table. These
-    // deliberately over- rather than under-estimate so the memory guard errs on
-    // the safe side.
+    // Sizes for the F16 `ggml-*.bin` entries are the actual unquantized files;
+    // RAM figures follow whisper.cpp's memory-usage table. Each full-precision
+    // model is followed by its quantized variant (`ggml-<name>-q5_*.bin`, also
+    // served from the same HF repo): ~2-3x smaller, faster (the q5/q8 kernels use
+    // ARM dotprod — see scripts/build-whisper.sh), and lighter on RAM, at a small
+    // accuracy cost. All figures deliberately over- rather than under-estimate so
+    // the memory guard errs on the safe side.
     val models: List<WhisperModel> = listOf(
         WhisperModel(
             id = "tiny",
@@ -56,6 +59,14 @@ object ModelRegistry {
             fileName = "ggml-tiny.bin",
             downloadSizeBytes = 75 * MB,
             requiredRamBytes = 390 * MB,
+            multilingual = true,
+        ),
+        WhisperModel(
+            id = "tiny-q5_1",
+            displayName = "Tiny (Q5_1)",
+            fileName = "ggml-tiny-q5_1.bin",
+            downloadSizeBytes = 31 * MB,
+            requiredRamBytes = 350 * MB,
             multilingual = true,
         ),
         WhisperModel(
@@ -67,11 +78,27 @@ object ModelRegistry {
             multilingual = false,
         ),
         WhisperModel(
+            id = "tiny.en-q5_1",
+            displayName = "Tiny (English, Q5_1)",
+            fileName = "ggml-tiny.en-q5_1.bin",
+            downloadSizeBytes = 31 * MB,
+            requiredRamBytes = 350 * MB,
+            multilingual = false,
+        ),
+        WhisperModel(
             id = "base",
             displayName = "Base",
             fileName = "ggml-base.bin",
             downloadSizeBytes = 142 * MB,
             requiredRamBytes = 500 * MB,
+            multilingual = true,
+        ),
+        WhisperModel(
+            id = "base-q5_1",
+            displayName = "Base (Q5_1)",
+            fileName = "ggml-base-q5_1.bin",
+            downloadSizeBytes = 57 * MB,
+            requiredRamBytes = 420 * MB,
             multilingual = true,
         ),
         WhisperModel(
@@ -83,11 +110,27 @@ object ModelRegistry {
             multilingual = false,
         ),
         WhisperModel(
+            id = "base.en-q5_1",
+            displayName = "Base (English, Q5_1)",
+            fileName = "ggml-base.en-q5_1.bin",
+            downloadSizeBytes = 57 * MB,
+            requiredRamBytes = 420 * MB,
+            multilingual = false,
+        ),
+        WhisperModel(
             id = "small",
             displayName = "Small",
             fileName = "ggml-small.bin",
             downloadSizeBytes = 466 * MB,
             requiredRamBytes = 1024 * MB, // ~1.0 GB
+            multilingual = true,
+        ),
+        WhisperModel(
+            id = "small-q5_1",
+            displayName = "Small (Q5_1)",
+            fileName = "ggml-small-q5_1.bin",
+            downloadSizeBytes = 182 * MB,
+            requiredRamBytes = 760 * MB,
             multilingual = true,
         ),
         WhisperModel(
@@ -99,11 +142,27 @@ object ModelRegistry {
             multilingual = false,
         ),
         WhisperModel(
+            id = "small.en-q5_1",
+            displayName = "Small (English, Q5_1)",
+            fileName = "ggml-small.en-q5_1.bin",
+            downloadSizeBytes = 182 * MB,
+            requiredRamBytes = 760 * MB,
+            multilingual = false,
+        ),
+        WhisperModel(
             id = "medium",
             displayName = "Medium",
             fileName = "ggml-medium.bin",
             downloadSizeBytes = 1536 * MB, // ~1.5 GB
             requiredRamBytes = 2662 * MB,  // ~2.6 GB
+            multilingual = true,
+        ),
+        WhisperModel(
+            id = "medium-q5_0",
+            displayName = "Medium (Q5_0)",
+            fileName = "ggml-medium-q5_0.bin",
+            downloadSizeBytes = 515 * MB,
+            requiredRamBytes = 1700 * MB,
             multilingual = true,
         ),
         WhisperModel(
@@ -115,11 +174,27 @@ object ModelRegistry {
             multilingual = false,
         ),
         WhisperModel(
+            id = "medium.en-q5_0",
+            displayName = "Medium (English, Q5_0)",
+            fileName = "ggml-medium.en-q5_0.bin",
+            downloadSizeBytes = 515 * MB,
+            requiredRamBytes = 1700 * MB,
+            multilingual = false,
+        ),
+        WhisperModel(
             id = "large-v3",
             displayName = "Large v3",
             fileName = "ggml-large-v3.bin",
             downloadSizeBytes = 3100 * MB, // ~3.0 GB
             requiredRamBytes = 3900 * MB,  // ~3.8 GB
+            multilingual = true,
+        ),
+        WhisperModel(
+            id = "large-v3-q5_0",
+            displayName = "Large v3 (Q5_0)",
+            fileName = "ggml-large-v3-q5_0.bin",
+            downloadSizeBytes = 1032 * MB, // ~1.0 GB
+            requiredRamBytes = 2400 * MB,  // ~2.3 GB
             multilingual = true,
         ),
     )

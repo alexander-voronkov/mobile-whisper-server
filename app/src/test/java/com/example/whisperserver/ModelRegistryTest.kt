@@ -10,13 +10,46 @@ import org.junit.Test
 class ModelRegistryTest {
 
     @Test
-    fun hasAllNineModelsFromSpec() {
+    fun hasAllNineFullPrecisionModelsFromSpec() {
         val ids = ModelRegistry.models.map { it.id }.toSet()
         val expected = setOf(
             "tiny", "tiny.en", "base", "base.en",
             "small", "small.en", "medium", "medium.en", "large-v3",
         )
-        assertEquals(expected, ids)
+        assertTrue("all full-precision models present", ids.containsAll(expected))
+    }
+
+    @Test
+    fun offersAQuantizedVariantForEverySize() {
+        val ids = ModelRegistry.models.map { it.id }.toSet()
+        val expectedQuant = setOf(
+            "tiny-q5_1", "tiny.en-q5_1", "base-q5_1", "base.en-q5_1",
+            "small-q5_1", "small.en-q5_1", "medium-q5_0", "medium.en-q5_0",
+            "large-v3-q5_0",
+        )
+        assertTrue("all quantized variants present", ids.containsAll(expectedQuant))
+    }
+
+    @Test
+    fun idsAreUnique() {
+        val ids = ModelRegistry.models.map { it.id }
+        assertEquals(ids.size, ids.toSet().size)
+    }
+
+    @Test
+    fun quantizedVariantsWeighLessThanTheirFullPrecisionSibling() {
+        // e.g. base-q5_1 must download smaller and need less RAM than base.
+        ModelRegistry.models
+            .filter { it.id.contains("-q") }
+            .forEach { quant ->
+                val fullId = quant.id.substringBefore("-q")
+                val full = ModelRegistry.byId(fullId)
+                    ?: error("quantized ${quant.id} has no full-precision sibling $fullId")
+                assertTrue("${quant.id} should download smaller than $fullId",
+                    quant.downloadSizeBytes < full.downloadSizeBytes)
+                assertTrue("${quant.id} should need <= RAM of $fullId",
+                    quant.requiredRamBytes <= full.requiredRamBytes)
+            }
     }
 
     @Test
@@ -34,7 +67,8 @@ class ModelRegistryTest {
 
     @Test
     fun englishVariantsAreNotMultilingual() {
-        ModelRegistry.models.filter { it.id.endsWith(".en") }.forEach {
+        // `.contains` (not `.endsWith`) so quantized ids like "base.en-q5_1" count.
+        ModelRegistry.models.filter { it.id.contains(".en") }.forEach {
             assertTrue("${it.id} should be English-only", !it.multilingual)
         }
     }
