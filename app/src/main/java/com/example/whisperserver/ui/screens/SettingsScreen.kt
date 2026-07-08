@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.whisperserver.data.Languages
 import com.example.whisperserver.data.ServerConfig
+import com.example.whisperserver.service.ServerState
 import com.example.whisperserver.ui.MainUiState
 import com.example.whisperserver.ui.components.CompactCard
 import com.example.whisperserver.ui.components.MiniToggle
@@ -48,6 +49,7 @@ import com.example.whisperserver.ui.theme.appColors
 @Composable
 fun SettingsScreen(
     state: MainUiState,
+    serverState: ServerState,
     maxThreads: Int,
     onHost: (String) -> Unit,
     onPort: (Int) -> Unit,
@@ -78,6 +80,11 @@ fun SettingsScreen(
                 HostRow(config, state, onHost)
                 RowDivider()
                 ValueRow("Port", config.port.toString(), mono = true) { editPort = true }
+                val running = serverState as? ServerState.Running
+                if (running != null && (running.host != config.host || running.port != config.port)) {
+                    RowDivider()
+                    PendingHint("Serving ${running.host}:${running.port} — restart to apply changes")
+                }
             }
 
             GroupLabel("Security")
@@ -99,7 +106,12 @@ fun SettingsScreen(
                 RowDivider()
                 ToggleRow("Translate to English", null, config.translate, onTranslate)
                 RowDivider()
-                ToggleRow("Convert audio (ffmpeg)", "Accept mp3/m4a/etc.", config.convertAudio, onConvert)
+                ToggleRow(
+                    "Convert audio (ffmpeg)",
+                    "Needs a build with ffmpeg bundled; otherwise uploads must be 16 kHz WAV",
+                    config.convertAudio,
+                    onConvert,
+                )
                 RowDivider()
                 ValueRow("Threads", config.threads.toString()) { editThreads = true }
             }
@@ -149,6 +161,16 @@ private fun GroupCard(content: @Composable () -> Unit) {
     CompactCard(Modifier.fillMaxWidth(), padding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)) {
         Column { content() }
     }
+}
+
+@Composable
+private fun PendingHint(text: String) {
+    Text(
+        text,
+        color = appColors.textSecondary,
+        fontSize = 10.sp,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+    )
 }
 
 @Composable

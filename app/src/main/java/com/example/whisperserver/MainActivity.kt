@@ -129,6 +129,7 @@ private fun WhisperServerApp(viewModel: MainViewModel = viewModel()) {
 
                 NavDest.Settings -> SettingsScreen(
                     state = uiState,
+                    serverState = serverState,
                     maxThreads = maxThreads,
                     onHost = viewModel::setHost,
                     onPort = viewModel::setPort,
