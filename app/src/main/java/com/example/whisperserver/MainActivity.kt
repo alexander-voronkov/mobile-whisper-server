@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.whisperserver.service.ServerState
 import com.example.whisperserver.ui.MainViewModel
 import com.example.whisperserver.ui.components.CompactBottomBar
 import com.example.whisperserver.ui.components.NavDest
@@ -118,6 +119,7 @@ private fun WhisperServerApp(viewModel: MainViewModel = viewModel()) {
 
                 NavDest.Models -> ModelManagerScreen(
                     models = uiState.models,
+                    runningModelId = (serverState as? ServerState.Running)?.modelId,
                     onSelect = { viewModel.selectModel(it.model) },
                     onDownload = { viewModel.downloadModel(it.model) },
                     onPause = { viewModel.pauseDownload(it.model) },

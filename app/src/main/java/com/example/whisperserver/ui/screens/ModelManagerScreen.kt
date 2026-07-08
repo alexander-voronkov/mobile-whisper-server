@@ -49,6 +49,10 @@ import com.example.whisperserver.ui.theme.appColors
 @Composable
 fun ModelManagerScreen(
     models: List<ModelUiState>,
+    // Model the server is CURRENTLY serving (from ServerState.Running), or null
+    // when stopped. Distinct from the selected config, which only takes effect on
+    // the next (re)start.
+    runningModelId: String?,
     onSelect: (ModelUiState) -> Unit,
     onDownload: (ModelUiState) -> Unit,
     onPause: (ModelUiState) -> Unit,
@@ -79,7 +83,11 @@ fun ModelManagerScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(models.size) { i ->
-                ModelCard(models[i], onSelect, onDownload, onPause, onCancel, onDelete)
+                ModelCard(
+                    models[i],
+                    isServing = runningModelId != null && runningModelId == models[i].model.id,
+                    onSelect, onDownload, onPause, onCancel, onDelete,
+                )
             }
         }
     }
@@ -88,6 +96,7 @@ fun ModelManagerScreen(
 @Composable
 private fun ModelCard(
     row: ModelUiState,
+    isServing: Boolean,
     onSelect: (ModelUiState) -> Unit,
     onDownload: (ModelUiState) -> Unit,
     onPause: (ModelUiState) -> Unit,
@@ -114,7 +123,10 @@ private fun ModelCard(
                             color = if (blocked) c.textMuted else c.textPrimary,
                             fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                         )
-                        if (row.isSelected) Badge("IN USE")
+                        when {
+                            isServing -> Badge("IN USE")
+                            row.isSelected -> Badge("NEXT START", accent = true)
+                        }
                     }
                     Text(
                         modelMeta(row),
@@ -124,10 +136,10 @@ private fun ModelCard(
                     )
                 }
                 Spacer(Modifier.width(8.dp))
-                TopRightControl(row, onSelect, onDownload)
+                TopRightControl(row, isServing, onSelect, onDownload)
             }
             Spacer(Modifier.height(9.dp))
-            BottomControls(row, onDownload, onPause, onCancel, onDelete)
+            BottomControls(row, isServing, onDownload, onPause, onCancel, onDelete)
         }
     }
 }
@@ -135,6 +147,7 @@ private fun ModelCard(
 @Composable
 private fun TopRightControl(
     row: ModelUiState,
+    isServing: Boolean,
     onSelect: (ModelUiState) -> Unit,
     onDownload: (ModelUiState) -> Unit,
 ) {
@@ -147,8 +160,8 @@ private fun TopRightControl(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     MiniToggle(checked = row.isSelected, onToggle = { onSelect(row) }, enabled = !row.isSelected)
                     Text(
-                        if (row.isSelected) "Active" else "Off",
-                        color = if (row.isSelected) c.primary else c.textMuted,
+                        when { isServing -> "Active"; row.isSelected -> "Next start"; else -> "Off" },
+                        color = when { isServing -> c.primary; row.isSelected -> c.textSecondary; else -> c.textMuted },
                         fontSize = 9.sp, fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(top = 3.dp),
                     )
@@ -166,6 +179,7 @@ private fun TopRightControl(
 @Composable
 private fun BottomControls(
     row: ModelUiState,
+    isServing: Boolean,
     onDownload: (ModelUiState) -> Unit,
     onPause: (ModelUiState) -> Unit,
     onCancel: (ModelUiState) -> Unit,
@@ -215,7 +229,7 @@ private fun BottomControls(
         DownloadUiState.Idle -> {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (row.isDownloaded) {
-                    val loaded = if (row.isSelected) "loaded" else "ready"
+                    val loaded = when { isServing -> "loaded"; row.isSelected -> "next start"; else -> "ready" }
                     StatusLine(Icons.Filled.CheckCircle, c.success, downloadedStatus(row) + " · " + loaded)
                     Spacer(Modifier.weight(1f))
                     Row(
@@ -245,12 +259,15 @@ private fun BottomControls(
 // ---- small building blocks --------------------------------------------------
 
 @Composable
-private fun Badge(text: String) {
+private fun Badge(text: String, accent: Boolean = false) {
     val c = appColors
     Text(
         text,
-        color = c.runningChipText, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.3.sp,
-        modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(c.runningChip).padding(horizontal = 6.dp, vertical = 2.dp),
+        color = if (accent) c.accentChipText else c.runningChipText,
+        fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.3.sp,
+        modifier = Modifier.clip(RoundedCornerShape(5.dp))
+            .background(if (accent) c.accentChip else c.runningChip)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
     )
 }
 
