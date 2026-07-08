@@ -15,6 +15,7 @@ import com.example.whisperserver.network.HostOption
 import com.example.whisperserver.network.TailscaleDetector
 import com.example.whisperserver.service.LogLevel
 import com.example.whisperserver.service.ServerController
+import com.example.whisperserver.service.TranscriptionRecord
 import com.example.whisperserver.service.WhisperServerService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -55,16 +56,35 @@ data class MainUiState(
     val hasApiKey: Boolean = false,
     val hasHfToken: Boolean = false,
     val tailscaleIp: String? = null,
+    /** True when this build bundles an ffmpeg binary, so "Convert audio" works. */
+    val ffmpegAvailable: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val container = WhisperApp.container(app)
 
-    // Server / logs / stats come straight from the process-wide controller.
+    // Whether an ffmpeg executable is bundled (shipped as libffmpeg.so and
+    // extracted to nativeLibraryDir). Stable for the process lifetime, so we
+    // resolve it once. Drives the "Convert audio" toggle's availability.
+    private val ffmpegAvailable: Boolean =
+        java.io.File(app.applicationInfo.nativeLibraryDir, "libffmpeg.so").exists()
+
+    // Server / logs / stats / records come straight from the process-wide controller.
     val serverState = ServerController.state
     val logs = ServerController.logs
     val stats = ServerController.stats
+    val records = ServerController.records
+
+    /** The cached audio clip for a record, or null if it wasn't retained. */
+    fun audioFile(record: TranscriptionRecord): java.io.File? =
+        container.audioStore.file(record.audioFileName)
+
+    /** Remove a record from the journal and delete its cached audio. */
+    fun deleteRecord(record: TranscriptionRecord) {
+        container.audioStore.delete(record.audioFileName)
+        ServerController.removeRecord(record.id)
+    }
 
     private val downloadStates = MutableStateFlow<Map<String, DownloadUiState>>(emptyMap())
     private val refreshTick = MutableStateFlow(0)
@@ -120,6 +140,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             hasApiKey = secretsState.hasApiKey,
             hasHfToken = secretsState.hasHfToken,
             tailscaleIp = hosts.firstOrNull { it.isTailscale }?.address,
+            ffmpegAvailable = ffmpegAvailable,
             models = rows.map { row ->
                 ModelUiState(
                     model = row.model,

@@ -1,7 +1,12 @@
 name: Build & Release APK
 
-# Builds an installable APK and publishes it as a GitHub Release named
-# "0.<build-number>" on every push to a build branch (and on-demand).
+# Two paths:
+#  - Pull requests -> a fast, read-only CHECK: compile the app + run unit tests
+#    (no native cross-compile, no APK packaging, no release). Just proves the
+#    code still builds.
+#  - Push to main (a merge) or manual dispatch -> the full RELEASE: cross-compile
+#    the native whisper-server, assemble the APK, and publish a numbered GitHub
+#    Release "0.<run>".
 #
 # The release APK is the *debug* variant so it is signed with a keystore and
 # installs without extra setup. NOTE: the debug keystore is generated fresh on
@@ -11,21 +16,60 @@ name: Build & Release APK
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
-      - "claude/android-whisper-server-g0b0wg"
-
-permissions:
-  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  # Lightweight compile + unit-test check for pull requests. Read-only token,
+  # no native build, no APK, no release — just "does it still build?".
+  pr-check:
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # Compiles the app (Kotlin + resources + manifest + R) and runs the unit
+      # tests. Does NOT cross-compile the native server or package the APK.
+      - name: Compile + unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+  # Full build + publish. Runs only on a push to main (merge) or manual dispatch.
+  release:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,17 +101,24 @@ jobs:
       # Best effort: cross-compile the native whisper-server so the released APK
       # can actually run the server. If this fails (e.g. toolchain issues), the
       # build continues and ships an APK whose UI works but that reports
-      # "binary not found" until a native lib is provided. Remove this step to
-      # speed up releases if you don't need the bundled server binary.
+      # "binary not found" until a native lib is provided.
       - name: Build native whisper-server (best effort, arm64-v8a + armeabi-v7a)
         continue-on-error: true
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
           echo "Using NDK at ${ANDROID_NDK_HOME:-<none>}"
-          # Build both ABIs the app declares in abiFilters (arm64 primary is
-          # built first, so if the 32-bit build fails the release still ships
-          # a working arm64 binary).
           ABIS="arm64-v8a armeabi-v7a" ./gradlew buildWhisperNative --no-daemon --stacktrace
+
+      # Best effort: cross-compile a minimal static ffmpeg so the released APK
+      # can transcode mp3/m4a/ogg/flac uploads. If it fails, the build continues
+      # and ships an APK that accepts 16 kHz WAV only (the app auto-detects the
+      # absence of libffmpeg.so and disables the "Convert audio" toggle).
+      - name: Build native ffmpeg (best effort, arm64-v8a + armeabi-v7a)
+        continue-on-error: true
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          echo "Using NDK at ${ANDROID_NDK_HOME:-<none>}"
+          ABIS="arm64-v8a armeabi-v7a" ./gradlew buildFfmpegNative --no-daemon --stacktrace
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
@@ -78,11 +129,24 @@ jobs:
           -PversionCode=${{ steps.ver.outputs.code }}
           -PversionName=${{ steps.ver.outputs.name }}
 
-      - name: Stage APK
+      # ABI splits produce one APK per ABI (app-<abi>-debug.apk). Rename each to
+      # a versioned, ABI-tagged filename for the release.
+      - name: Stage APKs
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk \
-            "dist/WhisperServer-${{ steps.ver.outputs.name }}.apk"
+          shopt -s nullglob
+          found=0
+          for apk in app/build/outputs/apk/debug/app-*-debug.apk; do
+            abi="$(basename "$apk" | sed -E 's/^app-(.*)-debug\.apk$/\1/')"
+            cp "$apk" "dist/WhisperServer-${{ steps.ver.outputs.name }}-${abi}.apk"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "ERROR: no per-ABI APKs found under app/build/outputs/apk/debug/" >&2
+            ls -la app/build/outputs/apk/debug/ || true
+            exit 1
+          fi
+          ls -la dist/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -94,11 +158,14 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "v${{ steps.ver.outputs.name }}" \
-            "dist/WhisperServer-${{ steps.ver.outputs.name }}.apk" \
+            dist/*.apk \
             --title "${{ steps.ver.outputs.name }}" \
             --target "${{ github.sha }}" \
             --notes "Automated build **${{ steps.ver.outputs.name }}** (run #${{ github.run_number }}) from \`${{ github.sha }}\`.
 
-          Install the attached \`WhisperServer-${{ steps.ver.outputs.name }}.apk\` (enable *Install unknown apps* on the device). This is a debug-signed build; uninstall a previous build before updating if the signature differs."
+          Install the APK for your phone's CPU (most modern devices are **arm64-v8a**; older/32-bit ones are **armeabi-v7a**). Enable *Install unknown apps* on the device first. This is a debug-signed build; uninstall a previous build before updating if the signature differs.
+
+          These builds bundle a minimal **ffmpeg**, so the *Convert audio* setting can transcode mp3/m4a/ogg/flac uploads to 16 kHz WAV."

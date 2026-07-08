@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicLong
 
 /** High-level lifecycle state of the whisper server. */
 sealed interface ServerState {
@@ -25,9 +26,11 @@ data class LogLine(
     val message: String,
 )
 
-/** Basic runtime statistics surfaced in the Stats screen. */
+/** Basic runtime statistics surfaced on the Dashboard. */
 data class ServerStats(
     val requestsServed: Long = 0,
+    val successCount: Long = 0,
+    val failureCount: Long = 0,
     val lastRequestAtMillis: Long = 0,
     val avgProcessingMillis: Long = 0,
     val memoryUsageBytes: Long = 0,
@@ -35,6 +38,10 @@ data class ServerStats(
 ) {
     val uptimeMillis: Long
         get() = if (startedAtMillis == 0L) 0 else System.currentTimeMillis() - startedAtMillis
+
+    /** Success rate in 0..100, or null when nothing has been served yet. */
+    val successRatePercent: Int?
+        get() = if (requestsServed <= 0) null else ((successCount.toDouble() / requestsServed) * 100).toInt()
 }
 
 /**
@@ -45,6 +52,7 @@ data class ServerStats(
 object ServerController {
 
     private const val MAX_LOG_LINES = 500
+    private const val MAX_RECORDS = 500
 
     private val _state = MutableStateFlow<ServerState>(ServerState.Stopped)
     val state: StateFlow<ServerState> = _state.asStateFlow()
@@ -55,9 +63,18 @@ object ServerController {
     private val _stats = MutableStateFlow(ServerStats())
     val stats: StateFlow<ServerStats> = _stats.asStateFlow()
 
+    /** Newest-first history of transcription requests fed by the proxy. */
+    private val _records = MutableStateFlow<List<TranscriptionRecord>>(emptyList())
+    val records: StateFlow<List<TranscriptionRecord>> = _records.asStateFlow()
+
+    private val recordIds = AtomicLong(0)
+
     // Rolling accumulator for average processing time.
     private var processingSamples = 0L
     private var processingTotalMillis = 0L
+
+    /** A unique, increasing id for the next transcription record / audio clip. */
+    fun nextRecordId(): Long = recordIds.incrementAndGet()
 
     fun setState(state: ServerState) {
         _state.value = state
@@ -80,31 +97,54 @@ object ServerController {
         _logs.value = emptyList()
     }
 
+    @Synchronized
     fun onServerStarted() {
         processingSamples = 0
         processingTotalMillis = 0
         _stats.value = ServerStats(startedAtMillis = System.currentTimeMillis())
+        _records.value = emptyList()
     }
 
     fun onServerStopped() {
         _stats.update { it.copy(startedAtMillis = 0) }
     }
 
-    fun recordRequest(processingMillis: Long?) {
+    /**
+     * Record one transcription request (success or failure). Appends it to the
+     * newest-first [records] history and folds it into the aggregate [stats]
+     * (count, success rate, and — for successful requests — the running average
+     * processing time).
+     */
+    @Synchronized
+    fun recordTranscription(record: TranscriptionRecord) {
+        _records.update { current ->
+            val next = listOf(record) + current
+            if (next.size > MAX_RECORDS) next.subList(0, MAX_RECORDS) else next
+        }
+        // Fold the rolling average OUTSIDE the stats.update lambda: update() can
+        // re-run its lambda under contention (CAS retry / a concurrent
+        // updateMemoryUsage), so mutating the accumulators there would double-count
+        // and drift the average upward. @Synchronized + a precomputed value keep it
+        // exactly-once; the lambda stays a pure function of `current`.
+        if (record.success && record.processingMillis > 0) {
+            processingSamples += 1
+            processingTotalMillis += record.processingMillis
+        }
+        val avg = if (processingSamples > 0) processingTotalMillis / processingSamples else 0L
         _stats.update { current ->
-            val newAvg = if (processingMillis != null) {
-                processingSamples += 1
-                processingTotalMillis += processingMillis
-                processingTotalMillis / processingSamples
-            } else {
-                current.avgProcessingMillis
-            }
             current.copy(
                 requestsServed = current.requestsServed + 1,
-                lastRequestAtMillis = System.currentTimeMillis(),
-                avgProcessingMillis = newAvg,
+                successCount = current.successCount + if (record.success) 1 else 0,
+                failureCount = current.failureCount + if (record.success) 0 else 1,
+                lastRequestAtMillis = record.timestampMillis,
+                avgProcessingMillis = if (record.success && record.processingMillis > 0) avg else current.avgProcessingMillis,
             )
         }
+    }
+
+    /** Drop a single record from the history (aggregate stats are left intact). */
+    fun removeRecord(id: Long) {
+        _records.update { current -> current.filterNot { it.id == id } }
     }
 
     fun updateMemoryUsage(bytes: Long) {

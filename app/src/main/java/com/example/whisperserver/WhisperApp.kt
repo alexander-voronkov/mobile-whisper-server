@@ -2,6 +2,7 @@ package com.example.whisperserver
 
 import android.app.Application
 import android.content.Context
+import com.example.whisperserver.data.AudioStore
 import com.example.whisperserver.data.ConfigRepository
 import com.example.whisperserver.data.MemoryChecker
 import com.example.whisperserver.data.ModelDownloader
@@ -16,6 +17,7 @@ class AppContainer(context: Context) {
     val secureStore: SecureStore = SecureStore(context)
     val modelDownloader: ModelDownloader = ModelDownloader(context)
     val memoryChecker: MemoryChecker = MemoryChecker(context)
+    val audioStore: AudioStore = AudioStore(context)
 }
 
 class WhisperApp : Application() {
