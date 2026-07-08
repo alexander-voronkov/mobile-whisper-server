@@ -58,10 +58,14 @@ class WhisperBridge(
     // Bounded cache of recent uploads, replayed from the transcription detail
     // screen. The recorder journals each request and persists its audio here.
     private val audioStore = WhisperApp.container(context).audioStore
+    private val transcriptionStore = WhisperApp.container(context).transcriptionStore
     private val recorder = object : TranscriptionRecorder {
         override val captureAudio: Boolean = true
         override fun nextId(): Long = ServerController.nextRecordId()
-        override fun record(record: TranscriptionRecord) = ServerController.recordTranscription(record)
+        override fun record(record: TranscriptionRecord) {
+            ServerController.recordTranscription(record) // in-memory (live UI)
+            transcriptionStore.persist(record)           // durable journal (survives restarts)
+        }
         override fun saveAudio(id: Long, ext: String, bytes: ByteArray): String? =
             audioStore.save(id, ext, bytes)
 
@@ -175,8 +179,9 @@ class WhisperBridge(
         crashTimestamps.clear()
         ServerController.setState(ServerState.Starting)
         ServerController.onServerStarted()
-        // Records reset on (re)start; drop stale cached audio to match.
-        audioStore.clear()
+        // Audio clips are NOT cleared on (re)start anymore: the journal is durable,
+        // so its clips must survive restarts. The AudioStore's own size/count caps
+        // bound disk use, and pruning a record deletes its clip.
 
         // Start the native server (bound to localhost). launchProcess reports its
         // own fatal error and tears down on failure.

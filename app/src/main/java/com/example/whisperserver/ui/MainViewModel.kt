@@ -80,10 +80,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun audioFile(record: TranscriptionRecord): java.io.File? =
         container.audioStore.file(record.audioFileName)
 
-    /** Remove a record from the journal and delete its cached audio. */
+    /** Remove a record from the journal (in-memory + durable) and delete its cached audio. */
     fun deleteRecord(record: TranscriptionRecord) {
         container.audioStore.delete(record.audioFileName)
         ServerController.removeRecord(record.id)
+        container.transcriptionStore.remove(record.id)
     }
 
     private val downloadStates = MutableStateFlow<Map<String, DownloadUiState>>(emptyMap())
